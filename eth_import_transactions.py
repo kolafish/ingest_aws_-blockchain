@@ -32,7 +32,7 @@ DEFAULT_CHUNKSIZE = 2000
 DEFAULT_BATCH_SIZE = 10000
 DEFAULT_SOURCE = "download"  # download | local | s3
 DEFAULT_LOCAL_DIR = "local_data_multi"
-DEFAULT_DROP_TABLE = False
+DEFAULT_CREATE_NEW_TABLE = False
 DEFAULT_DOWNLOAD_TIMEOUT = 300
 DEFAULT_DOWNLOAD_RETRIES = 3
 DEFAULT_DOWNLOAD_WORKERS = 8
@@ -52,16 +52,12 @@ def get_engine() -> Engine:
 	return create_engine(url, pool_pre_ping=True, pool_recycle=3600)
 
 
-DDL_DROP = """
-DROP TABLE IF EXISTS eth.eth_transactions;
-"""
-
 DDL_CREATE_DATABASE = """
 CREATE DATABASE IF NOT EXISTS eth;
 """
 
-DDL_CREATE_TABLE = """
-CREATE TABLE IF NOT EXISTS eth.eth_transactions (
+DDL_CREATE_TABLE_TEMPLATE = """
+CREATE TABLE IF NOT EXISTS eth.{table_name} (
   date VARCHAR(10) NOT NULL,
   hash VARCHAR(66) NOT NULL,
   block_timestamp BIGINT NOT NULL,
@@ -85,6 +81,10 @@ CREATE TABLE IF NOT EXISTS eth.eth_transactions (
   receipt_effective_gas_price BIGINT NULL,
   PRIMARY KEY (date, hash, block_timestamp)
 );
+"""
+
+DDL_ADD_FULLTEXT = """
+ALTER TABLE eth.{table_name} ADD FULLTEXT INDEX ft_index (date,hash,from_address,to_address,receipt_contract_address,block_hash) WITH PARSER standard;
 """
 
 
@@ -158,17 +158,50 @@ def validate_and_clean_data(df: pd.DataFrame) -> pd.DataFrame:
 	return df
 
 
-def ensure_schema(engine: Engine, drop_table: bool = True, date_str: str = None) -> None:
-	with engine.begin() as conn:
-		if drop_table:
-			logging.info("Dropping existing table...")
-			conn.execute(text(DDL_DROP.strip()))
-		
-		logging.info("Creating database...")
-		conn.execute(text(DDL_CREATE_DATABASE.strip()))
-		
-		logging.info("Creating table...")
-		conn.execute(text(DDL_CREATE_TABLE.strip()))
+def generate_table_name() -> str:
+	"""Generate table name with timestamp"""
+	timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+	return f"eth_transactions_{timestamp}"
+
+
+def ensure_schema(engine: Engine, create_new_table: bool = False, table_name: str = None) -> str:
+	"""
+	Ensure schema exists. If create_new_table, create a new table with timestamp.
+	Returns the table name to use.
+	"""
+	if create_new_table:
+		table_name = generate_table_name()
+		logging.info("Creating new table with timestamp: %s", table_name)
+		with engine.begin() as conn:
+			logging.info("Creating database...")
+			conn.execute(text(DDL_CREATE_DATABASE.strip()))
+			
+			logging.info("Creating table %s...", table_name)
+			create_sql = DDL_CREATE_TABLE_TEMPLATE.format(table_name=table_name)
+			conn.execute(text(create_sql.strip()))
+			
+			logging.info("Adding FULLTEXT index to %s...", table_name)
+			ft_sql = DDL_ADD_FULLTEXT.format(table_name=table_name)
+			conn.execute(text(ft_sql.strip()))
+		return table_name
+	else:
+		# Use existing table name or default
+		if table_name is None:
+			table_name = "eth_transactions"
+		logging.info("Using existing table: %s", table_name)
+		with engine.begin() as conn:
+			logging.info("Creating database...")
+			conn.execute(text(DDL_CREATE_DATABASE.strip()))
+			# Check if table exists, if not create default one
+			result = conn.execute(text("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='eth' AND table_name=:tname"), {"tname": table_name})
+			if result.scalar() == 0:
+				logging.info("Table %s does not exist, creating it...", table_name)
+				create_sql = DDL_CREATE_TABLE_TEMPLATE.format(table_name=table_name)
+				conn.execute(text(create_sql.strip()))
+				# Add FULLTEXT index only if table was just created
+				ft_sql = DDL_ADD_FULLTEXT.format(table_name=table_name)
+				conn.execute(text(ft_sql.strip()))
+		return table_name
 
 
 def _list_parquet_files(fs: pa_fs.S3FileSystem, date_str: str) -> list:
@@ -272,7 +305,7 @@ def download_files_to_local(fs: pa_fs.S3FileSystem, s3_files: list, date_str: st
 	return local_files
 
 
-def bulk_insert_chunk(conn, chunk: pd.DataFrame) -> None:
+def bulk_insert_chunk(conn, chunk: pd.DataFrame, table_name: str) -> None:
 	"""High-performance bulk insert using MySQL multi-row INSERT"""
 	columns = list(chunk.columns)
 	columns_str = ', '.join([f'`{col}`' for col in columns])
@@ -295,7 +328,7 @@ def bulk_insert_chunk(conn, chunk: pd.DataFrame) -> None:
 	
 	# Build the complete INSERT statement
 	sql = f"""
-	INSERT INTO eth.eth_transactions ({columns_str})
+	INSERT INTO eth.{table_name} ({columns_str})
 	VALUES {', '.join(values_list)}
 	"""
 	
@@ -303,7 +336,7 @@ def bulk_insert_chunk(conn, chunk: pd.DataFrame) -> None:
 	conn.execute(text(sql))
 
 
-def import_one_day(date_str: str, engine: Engine, chunksize: int = 10000, batch_size: int = 10000, use_bulk_insert: bool = True, verbose: bool = False, download_local: bool = True, download_timeout: int = 300, download_retries: int = 3) -> None:
+def import_one_day(date_str: str, engine: Engine, table_name: str, chunksize: int = 10000, batch_size: int = 10000, use_bulk_insert: bool = True, verbose: bool = False, download_local: bool = True, download_timeout: int = 300, download_retries: int = 3) -> None:
 	fs = pa_fs.S3FileSystem(region="us-east-2", anonymous=True)
 	files = _list_parquet_files(fs, date_str)
 	if not files:
@@ -413,11 +446,11 @@ def import_one_day(date_str: str, engine: Engine, chunksize: int = 10000, batch_
 				
 				if use_bulk_insert:
 					try:
-						bulk_insert_chunk(conn, chunk)
+						bulk_insert_chunk(conn, chunk, table_name)
 					except Exception as e:
 						logging.warning("Bulk insert failed, falling back to to_sql: %s", str(e))
 						chunk.to_sql(
-							"eth_transactions",
+							table_name,
 							con=conn,
 							schema="eth",
 							if_exists="append",
@@ -427,7 +460,7 @@ def import_one_day(date_str: str, engine: Engine, chunksize: int = 10000, batch_
 						)
 				else:
 					chunk.to_sql(
-						"eth_transactions",
+						table_name,
 						con=conn,
 						schema="eth",
 						if_exists="append",
@@ -461,10 +494,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--dates", required=False, help="Comma-separated dates YYYY-MM-DD,YYYY-MM-DD")
 	parser.add_argument("--chunksize", type=int, default=DEFAULT_CHUNKSIZE, help="Rows per insert batch")
 	parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="PyArrow scanner batch size")
-	group = parser.add_mutually_exclusive_group()
-	group.add_argument("--drop-table", dest="drop_table", action="store_true", help="Drop and recreate table before import")
-	group.add_argument("--no-drop-table", dest="drop_table", action="store_false", help="Don't drop table before creating")
-	parser.set_defaults(drop_table=DEFAULT_DROP_TABLE)
+	parser.add_argument("--create-new-table", action="store_true", default=DEFAULT_CREATE_NEW_TABLE, help="Create a new table with timestamp instead of using existing table")
 	parser.add_argument("--no-bulk-insert", action="store_true", help="Use pandas to_sql instead of bulk insert")
 	parser.add_argument("--download-timeout", type=int, default=DEFAULT_DOWNLOAD_TIMEOUT, help="Download timeout in seconds")
 	parser.add_argument("--download-retries", type=int, default=DEFAULT_DOWNLOAD_RETRIES, help="Max download retries")
@@ -512,8 +542,8 @@ def main() -> None:
 	download_retries = args.download_retries
 	download_workers = args.download_workers
 
-	# Drop table behavior from argparse default (via mutually exclusive group)
-	ensure_schema(engine, drop_table=args.drop_table, date_str=dates[0] if dates else None)
+	# Create new table or use existing one
+	table_name = ensure_schema(engine, create_new_table=args.create_new_table)
 
 	# If source is download, download all days concurrently into one directory
 	if source == "download":
@@ -577,15 +607,14 @@ def main() -> None:
 					end = min(start + chunksize, len(df))
 					chunk = df.iloc[start:end].copy()
 					with engine.begin() as conn:
-						if True:
-							try:
-								bulk_insert_chunk(conn, chunk)
-							except Exception:
-								chunk.to_sql("eth_transactions", con=conn, schema="eth", if_exists="append", index=False, method="multi", chunksize=None)
+						try:
+							bulk_insert_chunk(conn, chunk, table_name)
+						except Exception:
+							chunk.to_sql(table_name, con=conn, schema="eth", if_exists="append", index=False, method="multi", chunksize=None)
 					total_rows += len(df)
 			logging.info("Date %s import complete, total rows: %d", d, total_rows)
 		elif source == "s3":
-			import_one_day(d, engine, chunksize=chunksize, batch_size=batch_size, use_bulk_insert=not args.no_bulk_insert, verbose=args.verbose, download_local=False, download_timeout=download_timeout, download_retries=download_retries)
+			import_one_day(d, engine, table_name, chunksize=chunksize, batch_size=batch_size, use_bulk_insert=not args.no_bulk_insert, verbose=args.verbose, download_local=False, download_timeout=download_timeout, download_retries=download_retries)
 
 
 if __name__ == "__main__":
