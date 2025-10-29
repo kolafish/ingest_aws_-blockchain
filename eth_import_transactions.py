@@ -25,6 +25,19 @@ def configure_logging(verbose: bool = False) -> None:
 	)
 
 
+# Module-level defaults (edit here to change behavior without CLI)
+DEFAULT_START_DATE = "2025-10-19"
+DEFAULT_DAYS = 8
+DEFAULT_CHUNKSIZE = 2000
+DEFAULT_BATCH_SIZE = 10000
+DEFAULT_SOURCE = "download"  # download | local | s3
+DEFAULT_LOCAL_DIR = "local_data_multi"
+DEFAULT_DROP_TABLE = False
+DEFAULT_DOWNLOAD_TIMEOUT = 300
+DEFAULT_DOWNLOAD_RETRIES = 3
+DEFAULT_DOWNLOAD_WORKERS = 8
+
+
 ## Removed legacy progress/memory helpers (save_progress, load_progress, cleanup_progress, get_memory_usage)
 
 
@@ -439,23 +452,23 @@ def import_one_day(date_str: str, engine: Engine, chunksize: int = 10000, batch_
 def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description="Import Ethereum transactions to TiDB")
 	# New preferred inputs
-	parser.add_argument("--start-date", required=False, help="Start date in YYYY-MM-DD (inclusive)")
-	parser.add_argument("--days", type=int, required=False, help="Number of days to import, counting backwards from start-date")
-	parser.add_argument("--source", choices=["download", "local", "s3"], default="download", help="Input source: download (S3->local then read), local (read local only), s3 (read S3 directly)")
-	parser.add_argument("--local-dir", default="local_data_multi", help="Local directory for parquet files")
+	parser.add_argument("--start-date", default=DEFAULT_START_DATE, help="Start date in YYYY-MM-DD (inclusive)")
+	parser.add_argument("--days", type=int, default=DEFAULT_DAYS, help="Number of days to import, counting backwards from start-date")
+	parser.add_argument("--source", choices=["download", "local", "s3"], default=DEFAULT_SOURCE, help="Input source: download (S3->local then read), local (read local only), s3 (read S3 directly)")
+	parser.add_argument("--local-dir", default=DEFAULT_LOCAL_DIR, help="Local directory for parquet files")
 	# Backward compatibility
 	parser.add_argument("--date", required=False, help="Date in YYYY-MM-DD, e.g. 2025-10-25")
 	parser.add_argument("--dates", required=False, help="Comma-separated dates YYYY-MM-DD,YYYY-MM-DD")
-	parser.add_argument("--chunksize", type=int, default=10000, help="Rows per insert batch")
-	parser.add_argument("--batch-size", type=int, default=10000, help="PyArrow scanner batch size")
-	parser.add_argument("--drop-table", action="store_true", help="Drop and recreate table before import")
-	parser.add_argument("--no-drop-table", action="store_true", help="Don't drop table before creating")
+	parser.add_argument("--chunksize", type=int, default=DEFAULT_CHUNKSIZE, help="Rows per insert batch")
+	parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="PyArrow scanner batch size")
+	group = parser.add_mutually_exclusive_group()
+	group.add_argument("--drop-table", dest="drop_table", action="store_true", help="Drop and recreate table before import")
+	group.add_argument("--no-drop-table", dest="drop_table", action="store_false", help="Don't drop table before creating")
+	parser.set_defaults(drop_table=DEFAULT_DROP_TABLE)
 	parser.add_argument("--no-bulk-insert", action="store_true", help="Use pandas to_sql instead of bulk insert")
-	parser.add_argument("--download-local", action="store_true", default=True, help="Download files to local directory first (default: True)")
-	parser.add_argument("--no-download-local", action="store_true", help="Don't download files locally, read directly from S3")
-	parser.add_argument("--download-timeout", type=int, default=300, help="Download timeout in seconds (default: 300)")
-	parser.add_argument("--download-retries", type=int, default=3, help="Max download retries (default: 3)")
-	parser.add_argument("--download-workers", type=int, default=4, help="Concurrent download workers (default: 4)")
+	parser.add_argument("--download-timeout", type=int, default=DEFAULT_DOWNLOAD_TIMEOUT, help="Download timeout in seconds")
+	parser.add_argument("--download-retries", type=int, default=DEFAULT_DOWNLOAD_RETRIES, help="Max download retries")
+	parser.add_argument("--download-workers", type=int, default=DEFAULT_DOWNLOAD_WORKERS, help="Concurrent download workers")
 	parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
 	return parser.parse_args()
 
@@ -464,76 +477,43 @@ def main() -> None:
 	args = parse_args()
 	configure_logging(args.verbose)
 
-	# Top-level defaults (edit here instead of CLI if preferred)
-	DEFAULT_START_DATE = "2025-10-23" #datetime.utcnow().strftime("%Y-%m-%d")
-	DEFAULT_DAYS = 4
-	DEFAULT_CHUNKSIZE = 2000
-	DEFAULT_BATCH_SIZE = 10000
-	DEFAULT_SOURCE = "download"  # download | local | s3
-	DEFAULT_LOCAL_DIR = "local_data_multi"
-	DEFAULT_DROP_TABLE = True
-	DEFAULT_DOWNLOAD_TIMEOUT = 300
-	DEFAULT_DOWNLOAD_RETRIES = 3
-	DEFAULT_DOWNLOAD_WORKERS = 4
-
-	# Resolve date list (prefer start-date + days). If no CLI provided, use defaults for both start and days.
-	if args.start_date is not None or args.days is not None:
-		start_str = args.start_date or DEFAULT_START_DATE
+	# Resolve date list: deprecated flags override, otherwise use start-date + days (defaults already applied by argparse)
+	if args.dates or args.date:
+		dates: List[str] = []
+		if args.dates:
+			dates = [d.strip() for d in args.dates.split(',') if d.strip()]
+		elif args.date:
+			dates = [args.date]
+		for d in dates:
+			try:
+				datetime.strptime(d, "%Y-%m-%d")
+			except ValueError:
+				logging.error("Invalid date; expected YYYY-MM-DD: %s", d)
+				sys.exit(1)
+	else:
 		try:
-			start_dt = datetime.strptime(start_str, "%Y-%m-%d")
+			start_dt = datetime.strptime(args.start_date, "%Y-%m-%d")
 		except ValueError:
-			logging.error("Invalid --start-date format; expected YYYY-MM-DD")
+			logging.error("Invalid start date; expected YYYY-MM-DD: %s", args.start_date)
 			sys.exit(1)
-		days = args.days if args.days is not None else DEFAULT_DAYS
-		if days <= 0:
+		if args.days <= 0:
 			logging.error("--days must be positive")
 			sys.exit(1)
-		dates: List[str] = [(start_dt - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
-	else:
-		# No new-style params, prefer defaults; fallback to deprecated flags if provided
-		if args.dates or args.date:
-			dates: List[str] = []
-			if args.dates:
-				dates = [d.strip() for d in args.dates.split(',') if d.strip()]
-			elif args.date:
-				dates = [args.date]
-			for d in dates:
-				try:
-					datetime.strptime(d, "%Y-%m-%d")
-				except ValueError:
-					logging.error("Invalid date; expected YYYY-MM-DD: %s", d)
-					sys.exit(1)
-		else:
-			# Use code defaults for start-date + days
-			try:
-				start_dt = datetime.strptime(DEFAULT_START_DATE, "%Y-%m-%d")
-			except ValueError:
-				logging.error("DEFAULT_START_DATE is invalid, expected YYYY-MM-DD: %s", DEFAULT_START_DATE)
-				sys.exit(1)
-			if DEFAULT_DAYS <= 0:
-				logging.error("DEFAULT_DAYS must be positive")
-				sys.exit(1)
-			dates = [(start_dt - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(DEFAULT_DAYS)]
+		dates = [(start_dt - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(args.days)]
 
 	engine = get_engine()
 
-	# Resolve effective settings
-	chunksize = args.chunksize or DEFAULT_CHUNKSIZE
-	batch_size = args.batch_size or DEFAULT_BATCH_SIZE
-	source = args.source or DEFAULT_SOURCE
-	local_dir = args.local_dir or DEFAULT_LOCAL_DIR
-	download_timeout = args.download_timeout or DEFAULT_DOWNLOAD_TIMEOUT
-	download_retries = args.download_retries or DEFAULT_DOWNLOAD_RETRIES
-	download_workers = args.download_workers or DEFAULT_DOWNLOAD_WORKERS
+	# Resolve effective settings (argparse already applied defaults from constants)
+	chunksize = args.chunksize
+	batch_size = args.batch_size
+	source = args.source
+	local_dir = args.local_dir
+	download_timeout = args.download_timeout
+	download_retries = args.download_retries
+	download_workers = args.download_workers
 
-	# Drop table behavior: CLI flags override, otherwise use DEFAULT_DROP_TABLE
-	if args.drop_table:
-		drop_flag = True
-	elif args.no_drop_table:
-		drop_flag = False
-	else:
-		drop_flag = DEFAULT_DROP_TABLE
-	ensure_schema(engine, drop_table=drop_flag, date_str=dates[0] if dates else None)
+	# Drop table behavior from argparse default (via mutually exclusive group)
+	ensure_schema(engine, drop_table=args.drop_table, date_str=dates[0] if dates else None)
 
 	# If source is download, download all days concurrently into one directory
 	if source == "download":
