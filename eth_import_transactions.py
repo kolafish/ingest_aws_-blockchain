@@ -465,19 +465,19 @@ def main() -> None:
 	configure_logging(args.verbose)
 
 	# Top-level defaults (edit here instead of CLI if preferred)
-	DEFAULT_START_DATE = datetime.utcnow().strftime("%Y-%m-%d")
-	DEFAULT_DAYS = 1
-	DEFAULT_CHUNKSIZE = 10000
+	DEFAULT_START_DATE = "2025-10-23" #datetime.utcnow().strftime("%Y-%m-%d")
+	DEFAULT_DAYS = 4
+	DEFAULT_CHUNKSIZE = 2000
 	DEFAULT_BATCH_SIZE = 10000
 	DEFAULT_SOURCE = "download"  # download | local | s3
 	DEFAULT_LOCAL_DIR = "local_data_multi"
-	DEFAULT_DROP_TABLE = False
+	DEFAULT_DROP_TABLE = True
 	DEFAULT_DOWNLOAD_TIMEOUT = 300
 	DEFAULT_DOWNLOAD_RETRIES = 3
 	DEFAULT_DOWNLOAD_WORKERS = 4
 
-	# Resolve date list (prefer start-date + days)
-	if args.start_date or args.days is not None:
+	# Resolve date list (prefer start-date + days). If no CLI provided, use defaults for both start and days.
+	if args.start_date is not None or args.days is not None:
 		start_str = args.start_date or DEFAULT_START_DATE
 		try:
 			start_dt = datetime.strptime(start_str, "%Y-%m-%d")
@@ -490,20 +490,30 @@ def main() -> None:
 			sys.exit(1)
 		dates: List[str] = [(start_dt - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
 	else:
-		# Backward compatibility: --dates or --date
-		dates: List[str] = []
-		if args.dates:
-			dates = [d.strip() for d in args.dates.split(',') if d.strip()]
-		elif args.date:
-			dates = [args.date]
+		# No new-style params, prefer defaults; fallback to deprecated flags if provided
+		if args.dates or args.date:
+			dates: List[str] = []
+			if args.dates:
+				dates = [d.strip() for d in args.dates.split(',') if d.strip()]
+			elif args.date:
+				dates = [args.date]
+			for d in dates:
+				try:
+					datetime.strptime(d, "%Y-%m-%d")
+				except ValueError:
+					logging.error("Invalid date; expected YYYY-MM-DD: %s", d)
+					sys.exit(1)
 		else:
-			dates = [DEFAULT_START_DATE]
-		for d in dates:
+			# Use code defaults for start-date + days
 			try:
-				datetime.strptime(d, "%Y-%m-%d")
+				start_dt = datetime.strptime(DEFAULT_START_DATE, "%Y-%m-%d")
 			except ValueError:
-				logging.error("Invalid date; expected YYYY-MM-DD: %s", d)
+				logging.error("DEFAULT_START_DATE is invalid, expected YYYY-MM-DD: %s", DEFAULT_START_DATE)
 				sys.exit(1)
+			if DEFAULT_DAYS <= 0:
+				logging.error("DEFAULT_DAYS must be positive")
+				sys.exit(1)
+			dates = [(start_dt - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(DEFAULT_DAYS)]
 
 	engine = get_engine()
 
