@@ -191,7 +191,7 @@ def download_files_to_local(fs: pa_fs.S3FileSystem, s3_files: list, date_str: st
 				local_size = os.path.getsize(local_file)
 				
 				if local_size == remote_info.size:
-				logging.info("File %d/%d already exists locally: %s (%.2f MB)", 
+					logging.info("File %d/%d already exists locally: %s (%.2f MB)", 
 							i+1, len(s3_files), prefixed, local_size / (1024 * 1024))
 					local_files.append(local_file)
 					continue
