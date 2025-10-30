@@ -26,13 +26,13 @@ def configure_logging(verbose: bool = False) -> None:
 
 
 # Module-level defaults (edit here to change behavior without CLI)
-DEFAULT_START_DATE = "2025-10-19"
+DEFAULT_START_DATE = "2025-10-11"
 DEFAULT_DAYS = 8
 DEFAULT_CHUNKSIZE = 2000
-DEFAULT_BATCH_SIZE = 10000
+DEFAULT_BATCH_SIZE = 2000
 DEFAULT_SOURCE = "download"  # download | local | s3
 DEFAULT_LOCAL_DIR = "local_data_multi"
-DEFAULT_CREATE_NEW_TABLE = False
+DEFAULT_CREATE_NEW_TABLE = True
 DEFAULT_DOWNLOAD_TIMEOUT = 300
 DEFAULT_DOWNLOAD_RETRIES = 3
 DEFAULT_DOWNLOAD_WORKERS = 8
@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS eth.{table_name} (
   value DOUBLE NULL,
   gas BIGINT NULL,
   gas_price BIGINT NULL,
-  input LONGTEXT NULL,
+  input TEXT NULL,
   receipt_cumulative_gas_used BIGINT NULL,
   receipt_gas_used BIGINT NULL,
   receipt_contract_address VARCHAR(42) NULL,
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS eth.{table_name} (
   max_priority_fee_per_gas BIGINT NULL,
   transaction_type BIGINT NULL,
   receipt_effective_gas_price BIGINT NULL,
-  PRIMARY KEY (date, hash, block_timestamp)
+  PRIMARY KEY (block_timestamp)
 );
 """
 
@@ -133,8 +133,8 @@ def validate_and_clean_data(df: pd.DataFrame) -> pd.DataFrame:
 		# Convert to string and handle NaN values
 		df["input"] = df["input"].astype("string")
 		
-		# Check for extremely long input data and log warnings
-		long_inputs = df["input"].str.len() > 1000000  # 1MB threshold
+		# Check for long input data and log warnings near TEXT limit (~65,535 chars)
+		long_inputs = df["input"].str.len() > 60000
 		if long_inputs.any():
 			long_count = long_inputs.sum()
 			logging.warning("Found %d transactions with input data longer than 1MB", long_count)
@@ -144,13 +144,12 @@ def validate_and_clean_data(df: pd.DataFrame) -> pd.DataFrame:
 			for idx, length in long_examples.items():
 				logging.warning("Transaction at index %d has input length: %d characters", idx, length)
 		
-		# Truncate extremely long inputs to prevent database issues
-		# LONGTEXT can handle up to 4GB, but we'll set a reasonable limit
-		max_input_length = 10000000  # 10MB limit
+		# Truncate to MySQL TEXT max length (approx 65,535 chars)
+		max_input_length = 65535
 		df["input"] = df["input"].str.slice(0, max_input_length)
 		
 		# Log if any truncation occurred
-		truncated = df["input"].str.len() == max_input_length
+		truncated = df["input"].str.len() >= max_input_length
 		if truncated.any():
 			truncated_count = truncated.sum()
 			logging.warning("Truncated %d input fields to %d characters", truncated_count, max_input_length)
@@ -182,7 +181,10 @@ def ensure_schema(engine: Engine, create_new_table: bool = False, table_name: st
 			
 			logging.info("Adding FULLTEXT index to %s...", table_name)
 			ft_sql = DDL_ADD_FULLTEXT.format(table_name=table_name)
-			conn.execute(text(ft_sql.strip()))
+			logging.info("FULLTEXT index added to: %s", ft_sql.strip())
+
+			# conn.execute(text(ft_sql.strip()))
+			# logging.info("FULLTEXT index added to %s", ft_sql.strip())
 		return table_name
 	else:
 		# Use existing table name or default
@@ -199,8 +201,8 @@ def ensure_schema(engine: Engine, create_new_table: bool = False, table_name: st
 				create_sql = DDL_CREATE_TABLE_TEMPLATE.format(table_name=table_name)
 				conn.execute(text(create_sql.strip()))
 				# Add FULLTEXT index only if table was just created
-				ft_sql = DDL_ADD_FULLTEXT.format(table_name=table_name)
-				conn.execute(text(ft_sql.strip()))
+				# ft_sql = DDL_ADD_FULLTEXT.format(table_name=table_name)
+				# conn.execute(text(ft_sql.strip()))
 		return table_name
 
 
@@ -598,6 +600,8 @@ def main() -> None:
 				batch_idx += 1
 				df = batch.to_pandas(types_mapper=None)
 				df = normalize_hex(df)
+				# Ensure input fits TEXT column
+				df = validate_and_clean_data(df)
 				if "block_timestamp" in df.columns:
 					df["block_timestamp"] = pd.to_numeric(df["block_timestamp"], errors="coerce")
 				df["date"] = str(d)
