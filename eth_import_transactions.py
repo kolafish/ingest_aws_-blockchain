@@ -26,11 +26,11 @@ def configure_logging(verbose: bool = False) -> None:
 
 
 # Module-level defaults (edit here to change behavior without CLI)
-DEFAULT_START_DATE = "2025-10-11"
-DEFAULT_DAYS = 8
+DEFAULT_START_DATE = "2025-10-25"
+DEFAULT_DAYS = 45
 DEFAULT_CHUNKSIZE = 2000
 DEFAULT_BATCH_SIZE = 2000
-DEFAULT_SOURCE = "download"  # download | local | s3
+DEFAULT_SOURCE = "local"  # download | local | s3
 DEFAULT_LOCAL_DIR = "local_data_multi"
 DEFAULT_CREATE_NEW_TABLE = True
 DEFAULT_DOWNLOAD_TIMEOUT = 300
@@ -45,8 +45,8 @@ def get_engine() -> Engine:
 	user = os.getenv("TIDB_USER", "root")
 	password = os.getenv("TIDB_PASSWORD", "")
 	host = os.getenv("TIDB_HOST", "127.0.0.1")
-	port = int(os.getenv("TIDB_PORT", "4000"))
-	db = os.getenv("TIDB_DB", "eth")
+	port = int(os.getenv("TIDB_PORT", "4001"))
+	db = os.getenv("TIDB_DB", "test")
 
 	url = f"mysql+mysqlconnector://{user}:{password}@{host}:{port}/{db}?charset=utf8mb4"
 	return create_engine(url, pool_pre_ping=True, pool_recycle=3600)
@@ -57,7 +57,7 @@ CREATE DATABASE IF NOT EXISTS eth;
 """
 
 DDL_CREATE_TABLE_TEMPLATE = """
-CREATE TABLE IF NOT EXISTS eth.{table_name} (
+CREATE TABLE IF NOT EXISTS test.{table_name} (
   date VARCHAR(10) NOT NULL,
   hash VARCHAR(66) NOT NULL,
   block_timestamp BIGINT NOT NULL,
@@ -79,12 +79,12 @@ CREATE TABLE IF NOT EXISTS eth.{table_name} (
   max_priority_fee_per_gas BIGINT NULL,
   transaction_type BIGINT NULL,
   receipt_effective_gas_price BIGINT NULL,
-  PRIMARY KEY (block_timestamp)
+  PRIMARY KEY (hash, block_timestamp)
 );
 """
 
 DDL_ADD_FULLTEXT = """
-ALTER TABLE eth.{table_name} ADD FULLTEXT INDEX ft_index (date,hash,from_address,to_address,receipt_contract_address,block_hash) WITH PARSER standard;
+ALTER TABLE test.{table_name} ADD FULLTEXT INDEX ft_index (date,from_address,to_address,input,receipt_contract_address,block_hash) WITH PARSER standard;
 """
 
 
@@ -172,8 +172,8 @@ def ensure_schema(engine: Engine, create_new_table: bool = False, table_name: st
 		table_name = generate_table_name()
 		logging.info("Creating new table with timestamp: %s", table_name)
 		with engine.begin() as conn:
-			logging.info("Creating database...")
-			conn.execute(text(DDL_CREATE_DATABASE.strip()))
+			# logging.info("Creating database...")
+			# conn.execute(text(DDL_CREATE_DATABASE.strip()))
 			
 			logging.info("Creating table %s...", table_name)
 			create_sql = DDL_CREATE_TABLE_TEMPLATE.format(table_name=table_name)
@@ -181,10 +181,7 @@ def ensure_schema(engine: Engine, create_new_table: bool = False, table_name: st
 			
 			logging.info("Adding FULLTEXT index to %s...", table_name)
 			ft_sql = DDL_ADD_FULLTEXT.format(table_name=table_name)
-			logging.info("FULLTEXT index added to: %s", ft_sql.strip())
-
-			# conn.execute(text(ft_sql.strip()))
-			# logging.info("FULLTEXT index added to %s", ft_sql.strip())
+			conn.execute(text(ft_sql.strip()))
 		return table_name
 	else:
 		# Use existing table name or default
@@ -201,8 +198,8 @@ def ensure_schema(engine: Engine, create_new_table: bool = False, table_name: st
 				create_sql = DDL_CREATE_TABLE_TEMPLATE.format(table_name=table_name)
 				conn.execute(text(create_sql.strip()))
 				# Add FULLTEXT index only if table was just created
-				# ft_sql = DDL_ADD_FULLTEXT.format(table_name=table_name)
-				# conn.execute(text(ft_sql.strip()))
+				ft_sql = DDL_ADD_FULLTEXT.format(table_name=table_name)
+				conn.execute(text(ft_sql.strip()))
 		return table_name
 
 
@@ -330,7 +327,7 @@ def bulk_insert_chunk(conn, chunk: pd.DataFrame, table_name: str) -> None:
 	
 	# Build the complete INSERT statement
 	sql = f"""
-	INSERT INTO eth.{table_name} ({columns_str})
+	INSERT INTO test.{table_name} ({columns_str})
 	VALUES {', '.join(values_list)}
 	"""
 	
