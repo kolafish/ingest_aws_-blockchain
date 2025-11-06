@@ -27,7 +27,7 @@ def configure_logging(verbose: bool = False) -> None:
 
 # Module-level defaults (edit here to change behavior without CLI)
 DEFAULT_START_DATE = "2025-10-25"
-DEFAULT_DAYS = 45
+DEFAULT_DAYS = 45 # total 45 days
 DEFAULT_CHUNKSIZE = 2000
 DEFAULT_BATCH_SIZE = 2000
 DEFAULT_SOURCE = "local"  # download | local | s3
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS test.{table_name} (
   max_priority_fee_per_gas BIGINT NULL,
   transaction_type BIGINT NULL,
   receipt_effective_gas_price BIGINT NULL,
-  PRIMARY KEY (hash, block_timestamp)
+  PRIMARY KEY (block_timestamp, hash)
 );
 """
 
