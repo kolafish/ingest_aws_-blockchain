@@ -27,15 +27,16 @@ def configure_logging(verbose: bool = False) -> None:
 
 # Module-level defaults (edit here to change behavior without CLI)
 DEFAULT_START_DATE = "2025-10-25"
-DEFAULT_DAYS = 45 # total 45 days
-DEFAULT_CHUNKSIZE = 2000
-DEFAULT_BATCH_SIZE = 2000
+DEFAULT_DAYS = 7 # total 45 days
+DEFAULT_CHUNKSIZE = 5000
+DEFAULT_BATCH_SIZE = 5000
 DEFAULT_SOURCE = "local"  # download | local | s3
 DEFAULT_LOCAL_DIR = "local_data_multi"
 DEFAULT_CREATE_NEW_TABLE = True
 DEFAULT_DOWNLOAD_TIMEOUT = 300
 DEFAULT_DOWNLOAD_RETRIES = 3
 DEFAULT_DOWNLOAD_WORKERS = 8
+DEFAULT_INDEX_TYPE = "hybrid"  # fts | hybrid
 
 
 ## Removed legacy progress/memory helpers (save_progress, load_progress, cleanup_progress, get_memory_usage)
@@ -67,7 +68,7 @@ CREATE TABLE IF NOT EXISTS test.{table_name} (
   to_address VARCHAR(42) NULL,
   value DOUBLE NULL,
   gas BIGINT NULL,
-  gas_price BIGINT NULL,
+  gas_price BIGINT NOT NULL,
   input TEXT NULL,
   receipt_cumulative_gas_used BIGINT NULL,
   receipt_gas_used BIGINT NULL,
@@ -79,13 +80,49 @@ CREATE TABLE IF NOT EXISTS test.{table_name} (
   max_priority_fee_per_gas BIGINT NULL,
   transaction_type BIGINT NULL,
   receipt_effective_gas_price BIGINT NULL,
-  PRIMARY KEY (block_timestamp, hash)
+  PRIMARY KEY (block_timestamp, gas_price,hash)
 );
 """
 
 DDL_ADD_FULLTEXT = """
 ALTER TABLE test.{table_name} ADD FULLTEXT INDEX ft_index (date,from_address,to_address,input,receipt_contract_address,block_hash) WITH PARSER standard;
 """
+
+# Columns for Hybrid index: selected VARCHAR and BIGINT columns (max 16 columns)
+# Selected most commonly queried columns to stay within the 16-column limit
+HYBRID_INDEX_VARCHAR_COLUMNS = [
+	"date",
+	"hash",
+	"from_address",
+	"to_address",
+	"receipt_contract_address",
+]
+
+HYBRID_INDEX_BIGINT_COLUMNS = [
+	"block_timestamp",
+	"block_number",
+	"transaction_index",
+	"gas",
+	"gas_price",
+	"receipt_status",
+	"transaction_type",
+]
+
+def get_hybrid_index_sql(table_name: str) -> str:
+	"""Generate Hybrid index SQL with inverted and sort configuration"""
+	all_columns = HYBRID_INDEX_VARCHAR_COLUMNS + HYBRID_INDEX_BIGINT_COLUMNS
+	columns_str = ", ".join(all_columns)
+	columns_json = ", ".join([f'"{col}"' for col in all_columns])
+	
+	# Sort columns: block_timestamp, date, gas_price
+	sort_columns = ["block_timestamp", "gas_price"]
+	sort_columns_json = ", ".join([f'"{col}"' for col in sort_columns])
+	# Sort order: desc for timestamp and date (newest first), desc for gas_price (highest first)
+	sort_order = ["desc", "desc"]
+	sort_order_json = ", ".join([f'"{order}"' for order in sort_order])
+	
+	sql = f"""CREATE HYBRID INDEX idx_{table_name}_hybrid ON test.{table_name}({columns_str}) PARAMETER '{{"inverted": {{"columns": [{columns_json}]}}, "sort": {{"columns": [{sort_columns_json}], "order": [{sort_order_json}]}}}}';"""
+	return sql
 
 
 PREFERRED_COLUMNS = [
@@ -163,10 +200,11 @@ def generate_table_name() -> str:
 	return f"eth_transactions_{timestamp}"
 
 
-def ensure_schema(engine: Engine, create_new_table: bool = False, table_name: str = None) -> str:
+def ensure_schema(engine: Engine, create_new_table: bool = False, table_name: str = None, index_type: str = "fts") -> str:
 	"""
 	Ensure schema exists. If create_new_table, create a new table with timestamp.
 	Returns the table name to use.
+	index_type: "fts" for FULLTEXT index, "hybrid" for Hybrid index
 	"""
 	if create_new_table:
 		table_name = generate_table_name()
@@ -179,9 +217,16 @@ def ensure_schema(engine: Engine, create_new_table: bool = False, table_name: st
 			create_sql = DDL_CREATE_TABLE_TEMPLATE.format(table_name=table_name)
 			conn.execute(text(create_sql.strip()))
 			
-			logging.info("Adding FULLTEXT index to %s...", table_name)
-			ft_sql = DDL_ADD_FULLTEXT.format(table_name=table_name)
-			conn.execute(text(ft_sql.strip()))
+			if index_type == "hybrid":
+				logging.info("Adding Hybrid index to %s...", table_name)
+				hybrid_sql = get_hybrid_index_sql(table_name)
+				logging.info("Hybrid index SQL: %s", hybrid_sql.strip())
+				conn.execute(text(hybrid_sql.strip()))
+			else:
+				logging.info("Adding FULLTEXT index to %s...", table_name)
+				ft_sql = DDL_ADD_FULLTEXT.format(table_name=table_name)
+				logging.info("FULLTEXT index SQL: %s", ft_sql.strip())
+				conn.execute(text(ft_sql.strip()))
 		return table_name
 	else:
 		# Use existing table name or default
@@ -197,9 +242,17 @@ def ensure_schema(engine: Engine, create_new_table: bool = False, table_name: st
 				logging.info("Table %s does not exist, creating it...", table_name)
 				create_sql = DDL_CREATE_TABLE_TEMPLATE.format(table_name=table_name)
 				conn.execute(text(create_sql.strip()))
-				# Add FULLTEXT index only if table was just created
-				ft_sql = DDL_ADD_FULLTEXT.format(table_name=table_name)
-				conn.execute(text(ft_sql.strip()))
+				# Add index only if table was just created
+				if index_type == "hybrid":
+					logging.info("Adding Hybrid index to %s...", table_name)
+					hybrid_sql = get_hybrid_index_sql(table_name)
+					logging.info("Hybrid index SQL: %s", hybrid_sql.strip())
+					conn.execute(text(hybrid_sql.strip()))
+				else:
+					logging.info("Adding FULLTEXT index to %s...", table_name)
+					ft_sql = DDL_ADD_FULLTEXT.format(table_name=table_name)
+					logging.info("FULLTEXT index SQL: %s", ft_sql.strip())
+					conn.execute(text(ft_sql.strip()))
 		return table_name
 
 
@@ -305,34 +358,28 @@ def download_files_to_local(fs: pa_fs.S3FileSystem, s3_files: list, date_str: st
 
 
 def bulk_insert_chunk(conn, chunk: pd.DataFrame, table_name: str) -> None:
-	"""High-performance bulk insert using MySQL multi-row INSERT"""
+	"""High-performance bulk insert using parameterized queries with executemany"""
 	columns = list(chunk.columns)
 	columns_str = ', '.join([f'`{col}`' for col in columns])
+	placeholders = ', '.join(['%s'] * len(columns))
 	
-	# Create VALUES clause for all rows
-	values_list = []
-	for _, row in chunk.iterrows():
-		# Convert each value to proper format
-		row_values = []
-		for val in row:
-			if pd.isna(val):
-				row_values.append('NULL')
-			elif isinstance(val, str):
-				# Escape single quotes and wrap in quotes
-				escaped_val = val.replace("'", "''")
-				row_values.append(f"'{escaped_val}'")
-			else:
-				row_values.append(str(val))
-		values_list.append(f"({', '.join(row_values)})")
+	# Build parameterized INSERT statement (no string concatenation needed)
+	sql = f"INSERT INTO test.{table_name} ({columns_str}) VALUES ({placeholders})"
 	
-	# Build the complete INSERT statement
-	sql = f"""
-	INSERT INTO test.{table_name} ({columns_str})
-	VALUES {', '.join(values_list)}
-	"""
+	# Convert DataFrame to list of tuples efficiently
+	# Replace NaN with None (MySQL interprets None as NULL)
+	chunk_clean = chunk.where(pd.notna(chunk), None)
+	values = [tuple(row) for row in chunk_clean.values]
 	
-	# Execute the bulk insert
-	conn.execute(text(sql))
+	# Use raw connection for executemany (much faster than string concatenation)
+	# Get the underlying connection from SQLAlchemy
+	raw_conn = conn.connection
+	cursor = raw_conn.cursor()
+	try:
+		cursor.executemany(sql, values)
+		# Note: commit is handled by the transaction context manager
+	finally:
+		cursor.close()
 
 
 def import_one_day(date_str: str, engine: Engine, table_name: str, chunksize: int = 10000, batch_size: int = 10000, use_bulk_insert: bool = True, verbose: bool = False, download_local: bool = True, download_timeout: int = 300, download_retries: int = 3) -> None:
@@ -498,6 +545,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--download-timeout", type=int, default=DEFAULT_DOWNLOAD_TIMEOUT, help="Download timeout in seconds")
 	parser.add_argument("--download-retries", type=int, default=DEFAULT_DOWNLOAD_RETRIES, help="Max download retries")
 	parser.add_argument("--download-workers", type=int, default=DEFAULT_DOWNLOAD_WORKERS, help="Concurrent download workers")
+	parser.add_argument("--index-type", choices=["fts", "hybrid"], default=DEFAULT_INDEX_TYPE, help="Index type: fts (FULLTEXT) or hybrid (Hybrid index)")
 	parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
 	return parser.parse_args()
 
@@ -542,7 +590,7 @@ def main() -> None:
 	download_workers = args.download_workers
 
 	# Create new table or use existing one
-	table_name = ensure_schema(engine, create_new_table=args.create_new_table)
+	table_name = ensure_schema(engine, create_new_table=args.create_new_table, index_type=args.index_type)
 
 	# If source is download, download all days concurrently into one directory
 	if source == "download":
