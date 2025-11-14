@@ -35,7 +35,8 @@ def find_latest_table(engine: Engine) -> Optional[str]:
 
 def fetch_count(engine: Engine, table_name: str) -> tuple[int, float]:
     start = time.perf_counter()
-    stmt = text(f"SELECT COUNT(*) FROM test.{table_name} WHERE fts_match_word(\"2025\", date)")
+    #stmt = text(f"SELECT COUNT(*) FROM test.{table_name} WHERE fts_match_word(\"2025\", date)")
+    stmt = text(f"SELECT COUNT(*) FROM test.{table_name} WHERE  date=\"2025-10-25\" or  date=\"2025-10-24\" or  date=\"2025-10-23\" or  date=\"2025-10-22\" or  date=\"2025-10-21\"")
     with engine.connect() as conn:
         val = conn.execute(stmt).scalar()
     elapsed_ms = (time.perf_counter() - start) * 1000.0
