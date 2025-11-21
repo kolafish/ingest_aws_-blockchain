@@ -14,6 +14,7 @@ import pyarrow.dataset as ds
 from pyarrow import fs as pa_fs
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+import random
 
 
 def configure_logging(verbose: bool = False) -> None:
@@ -26,17 +27,18 @@ def configure_logging(verbose: bool = False) -> None:
 
 
 # Module-level defaults (edit here to change behavior without CLI)
-DEFAULT_START_DATE = "2025-10-25"
-DEFAULT_DAYS = 7 # total 45 days
+DEFAULT_START_DATE = "2025-10-23"
+DEFAULT_DAYS = 1 # total 45 days
 DEFAULT_CHUNKSIZE = 5000
 DEFAULT_BATCH_SIZE = 5000
 DEFAULT_SOURCE = "local"  # download | local | s3
 DEFAULT_LOCAL_DIR = "local_data_multi"
-DEFAULT_CREATE_NEW_TABLE = True
+DEFAULT_CREATE_NEW_TABLE = False
 DEFAULT_DOWNLOAD_TIMEOUT = 300
 DEFAULT_DOWNLOAD_RETRIES = 3
 DEFAULT_DOWNLOAD_WORKERS = 8
 DEFAULT_INDEX_TYPE = "hybrid"  # fts | hybrid
+DEFAULT_BLOCK_TIMESTAMP_TYPE = "bigint"  # datetime | bigint
 
 
 ## Removed legacy progress/memory helpers (save_progress, load_progress, cleanup_progress, get_memory_usage)
@@ -57,11 +59,18 @@ DDL_CREATE_DATABASE = """
 CREATE DATABASE IF NOT EXISTS eth;
 """
 
-DDL_CREATE_TABLE_TEMPLATE = """
+def get_create_table_ddl(table_name: str, block_timestamp_type: str = "datetime") -> str:
+	"""Generate CREATE TABLE DDL with configurable block_timestamp type"""
+	if block_timestamp_type not in ["datetime", "bigint"]:
+		raise ValueError(f"block_timestamp_type must be 'datetime' or 'bigint', got: {block_timestamp_type}")
+	
+	timestamp_type = "DATETIME" if block_timestamp_type == "datetime" else "BIGINT"
+	
+	return f"""
 CREATE TABLE IF NOT EXISTS test.{table_name} (
   date VARCHAR(10) NOT NULL,
   hash VARCHAR(66) NOT NULL,
-  block_timestamp BIGINT NOT NULL,
+  block_timestamp {timestamp_type} NOT NULL,
   nonce BIGINT NULL,
   transaction_index BIGINT NULL,
   from_address VARCHAR(42) NULL,
@@ -80,6 +89,7 @@ CREATE TABLE IF NOT EXISTS test.{table_name} (
   max_priority_fee_per_gas BIGINT NULL,
   transaction_type BIGINT NULL,
   receipt_effective_gas_price BIGINT NULL,
+  random_flag BOOLEAN NULL,
   PRIMARY KEY (block_timestamp, gas_price,hash)
 );
 """
@@ -88,8 +98,9 @@ DDL_ADD_FULLTEXT = """
 ALTER TABLE test.{table_name} ADD FULLTEXT INDEX ft_index (date,from_address,to_address,input,receipt_contract_address,block_hash) WITH PARSER standard;
 """
 
-# Columns for Hybrid index: selected VARCHAR and BIGINT columns (max 16 columns)
+# Columns for Hybrid index: selected VARCHAR, DATETIME and BIGINT columns (max 16 columns)
 # Selected most commonly queried columns to stay within the 16-column limit
+# Note: block_timestamp can be DATETIME or BIGINT type depending on configuration, but can still be included in Hybrid index
 HYBRID_INDEX_VARCHAR_COLUMNS = [
 	"date",
 	"hash",
@@ -99,7 +110,7 @@ HYBRID_INDEX_VARCHAR_COLUMNS = [
 ]
 
 HYBRID_INDEX_BIGINT_COLUMNS = [
-	"block_timestamp",
+	"block_timestamp",  # Can be DATETIME or BIGINT type depending on configuration, included here for Hybrid index compatibility
 	"block_number",
 	"transaction_index",
 	"gas",
@@ -108,9 +119,13 @@ HYBRID_INDEX_BIGINT_COLUMNS = [
 	"transaction_type",
 ]
 
+HYBRID_INDEX_BOOLEAN_COLUMNS = [
+	"random_flag",
+]
+
 def get_hybrid_index_sql(table_name: str) -> str:
 	"""Generate Hybrid index SQL with inverted and sort configuration"""
-	all_columns = HYBRID_INDEX_VARCHAR_COLUMNS + HYBRID_INDEX_BIGINT_COLUMNS
+	all_columns = HYBRID_INDEX_VARCHAR_COLUMNS + HYBRID_INDEX_BIGINT_COLUMNS + HYBRID_INDEX_BOOLEAN_COLUMNS
 	columns_str = ", ".join(all_columns)
 	columns_json = ", ".join([f'"{col}"' for col in all_columns])
 	
@@ -146,6 +161,7 @@ PREFERRED_COLUMNS = [
 	"max_priority_fee_per_gas",
 	"transaction_type",
 	"receipt_effective_gas_price",
+	"random_flag",
 ]
 
 
@@ -200,21 +216,38 @@ def generate_table_name() -> str:
 	return f"eth_transactions_{timestamp}"
 
 
-def ensure_schema(engine: Engine, create_new_table: bool = False, table_name: str = None, index_type: str = "fts") -> str:
+def find_latest_table(engine: Engine) -> Optional[str]:
+	"""Find the latest table by timestamp in table name"""
+	query = text(
+		"""
+		SELECT table_name
+		FROM information_schema.tables
+		WHERE table_schema = 'test' AND table_name LIKE 'eth_transactions\\_%'
+		ORDER BY table_name DESC
+		LIMIT 1
+		"""
+	)
+	with engine.connect() as conn:
+		result = conn.execute(query).scalar()
+		return result
+
+
+def ensure_schema(engine: Engine, create_new_table: bool = False, table_name: str = None, index_type: str = "fts", block_timestamp_type: str = "datetime") -> str:
 	"""
 	Ensure schema exists. If create_new_table, create a new table with timestamp.
 	Returns the table name to use.
 	index_type: "fts" for FULLTEXT index, "hybrid" for Hybrid index
+	block_timestamp_type: "datetime" for DATETIME type, "bigint" for BIGINT type
 	"""
 	if create_new_table:
 		table_name = generate_table_name()
-		logging.info("Creating new table with timestamp: %s", table_name)
+		logging.info("Creating new table with timestamp: %s (block_timestamp type: %s)", table_name, block_timestamp_type)
 		with engine.begin() as conn:
 			# logging.info("Creating database...")
 			# conn.execute(text(DDL_CREATE_DATABASE.strip()))
 			
 			logging.info("Creating table %s...", table_name)
-			create_sql = DDL_CREATE_TABLE_TEMPLATE.format(table_name=table_name)
+			create_sql = get_create_table_ddl(table_name, block_timestamp_type)
 			conn.execute(text(create_sql.strip()))
 			
 			if index_type == "hybrid":
@@ -229,18 +262,26 @@ def ensure_schema(engine: Engine, create_new_table: bool = False, table_name: st
 				conn.execute(text(ft_sql.strip()))
 		return table_name
 	else:
-		# Use existing table name or default
+		# Use existing table name or find latest table by timestamp
 		if table_name is None:
-			table_name = "eth_transactions"
-		logging.info("Using existing table: %s", table_name)
+			latest_table = find_latest_table(engine)
+			if latest_table:
+				table_name = latest_table
+				logging.info("Found latest table by timestamp: %s", table_name)
+			else:
+				table_name = "eth_transactions"
+				logging.info("No timestamped table found, using default: %s", table_name)
+		else:
+			logging.info("Using specified table: %s", table_name)
+		
 		with engine.begin() as conn:
 			logging.info("Creating database...")
 			conn.execute(text(DDL_CREATE_DATABASE.strip()))
 			# Check if table exists, if not create default one
-			result = conn.execute(text("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='eth' AND table_name=:tname"), {"tname": table_name})
+			result = conn.execute(text("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='test' AND table_name=:tname"), {"tname": table_name})
 			if result.scalar() == 0:
 				logging.info("Table %s does not exist, creating it...", table_name)
-				create_sql = DDL_CREATE_TABLE_TEMPLATE.format(table_name=table_name)
+				create_sql = get_create_table_ddl(table_name, block_timestamp_type)
 				conn.execute(text(create_sql.strip()))
 				# Add index only if table was just created
 				if index_type == "hybrid":
@@ -382,7 +423,7 @@ def bulk_insert_chunk(conn, chunk: pd.DataFrame, table_name: str) -> None:
 		cursor.close()
 
 
-def import_one_day(date_str: str, engine: Engine, table_name: str, chunksize: int = 10000, batch_size: int = 10000, use_bulk_insert: bool = True, verbose: bool = False, download_local: bool = True, download_timeout: int = 300, download_retries: int = 3) -> None:
+def import_one_day(date_str: str, engine: Engine, table_name: str, chunksize: int = 10000, batch_size: int = 10000, use_bulk_insert: bool = True, verbose: bool = False, download_local: bool = True, download_timeout: int = 300, download_retries: int = 3, block_timestamp_type: str = "datetime") -> None:
 	fs = pa_fs.S3FileSystem(region="us-east-2", anonymous=True)
 	files = _list_parquet_files(fs, date_str)
 	if not files:
@@ -457,6 +498,43 @@ def import_one_day(date_str: str, engine: Engine, table_name: str, chunksize: in
 		logging.info("Converting batch to pandas DataFrame...")
 		df = batch.to_pandas(types_mapper=None)
 		logging.info("DataFrame created with shape: %s", df.shape)
+
+		# Print first record field information (only for the first batch)
+		if batch_idx == 1 and len(df) > 0:
+			print("\n" + "="*100)
+			print("原始数据第一条记录字段信息 (First Record Field Information)")
+			print("="*100)
+			print(f"{'字段名称':<20} {'字段值':<50} {'字段类型':<20}")
+			print("-" * 100)
+			first_row = df.iloc[0]
+			for col in df.columns:
+				value = first_row[col]
+				# Show datetime type for block_timestamp
+				if col == "block_timestamp":
+					col_type = "datetime (Unix timestamp)"
+				else:
+					col_type = str(df[col].dtype)
+				# Handle NaN values and truncate very long values for display
+				if pd.isna(value):
+					value_str = "<NULL>"
+				else:
+					# Convert block_timestamp to datetime format for display
+					if col == "block_timestamp":
+						try:
+							# Try to convert Unix timestamp to datetime
+							if isinstance(value, (int, float)) and value > 0:
+								dt = datetime.fromtimestamp(value)
+								value_str = dt.strftime("%Y-%m-%d %H:%M:%S") + f" (timestamp: {int(value)})"
+							else:
+								value_str = str(value)
+						except (ValueError, OSError, OverflowError):
+							value_str = str(value)
+					else:
+						value_str = str(value)
+					if len(value_str) > 50:
+						value_str = value_str[:47] + "..."
+				print(f"{col:<20} {value_str:<50} {col_type:<20}")
+			print("="*100 + "\n")
 		
 		# Only normalize hex-like columns and set date string; keep numeric types as-is
 		logging.info("Normalizing hex columns...")
@@ -466,13 +544,60 @@ def import_one_day(date_str: str, engine: Engine, table_name: str, chunksize: in
 		logging.info("Validating and cleaning data...")
 		df = validate_and_clean_data(df)
 		
-		# Ensure block_timestamp is numeric (unix seconds) for BIGINT column
+		# Convert block_timestamp based on block_timestamp_type
 		if "block_timestamp" in df.columns:
-			logging.info("Converting block_timestamp to numeric...")
-			df["block_timestamp"] = pd.to_numeric(df["block_timestamp"], errors="coerce")
+			if block_timestamp_type == "datetime":
+				# Convert block_timestamp from Unix timestamp to datetime
+				# Check if already datetime type - if so, skip conversion
+				if not pd.api.types.is_datetime64_any_dtype(df["block_timestamp"]):
+					# First convert to numeric to handle any string representations
+					df["block_timestamp"] = pd.to_numeric(df["block_timestamp"], errors="coerce")
+					
+					# Check if values are in milliseconds (typical for Ethereum: > 1e12) or seconds
+					sample_val = df["block_timestamp"].dropna()
+					if len(sample_val) > 0:
+						median_val = sample_val.median()
+						if median_val > 1e12:
+							# Values are in milliseconds, convert to seconds first
+							if batch_idx == 1:
+								logging.info(f"Converting block_timestamp: detected millisecond timestamps, converting to seconds...")
+							df["block_timestamp"] = df["block_timestamp"] / 1000.0
+						elif median_val <= 0:
+							logging.error(f"Invalid timestamp values detected! Median: {median_val}")
+					
+					# Convert Unix timestamp to datetime
+					df["block_timestamp"] = pd.to_datetime(df["block_timestamp"], unit='s', errors='coerce')
+					
+					# Check for invalid dates and log warning
+					invalid_count = df["block_timestamp"].isna().sum()
+					if invalid_count > 0:
+						logging.warning(f"Found {invalid_count} invalid block_timestamp values that could not be converted to datetime")
+			else:
+				# block_timestamp_type == "bigint"
+				# Keep as numeric (Unix timestamp), ensure it's integer type
+				if not pd.api.types.is_integer_dtype(df["block_timestamp"]):
+					# Convert to numeric first
+					df["block_timestamp"] = pd.to_numeric(df["block_timestamp"], errors="coerce")
+					
+					# Check if values are in milliseconds (typical for Ethereum: > 1e12) or seconds
+					sample_val = df["block_timestamp"].dropna()
+					if len(sample_val) > 0:
+						median_val = sample_val.median()
+						if median_val > 1e12:
+							# Values are in milliseconds, convert to seconds first
+							if batch_idx == 1:
+								logging.info(f"Converting block_timestamp: detected millisecond timestamps, converting to seconds...")
+							df["block_timestamp"] = df["block_timestamp"] / 1000.0
+					
+					# Convert to integer (Unix timestamp in seconds)
+					df["block_timestamp"] = df["block_timestamp"].astype('Int64')  # Nullable integer type
 		
 		logging.info("Setting date column to: %s", date_str)
 		df["date"] = str(date_str)
+		
+		# Generate random boolean values for random_flag column
+		logging.info("Generating random boolean values for random_flag column...")
+		df["random_flag"] = [random.choice([True, False]) for _ in range(len(df))]
 
 		if len(df) == 0:
 			logging.info("Batch #%d is empty after transforms; skipping", batch_idx)
@@ -546,6 +671,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--download-retries", type=int, default=DEFAULT_DOWNLOAD_RETRIES, help="Max download retries")
 	parser.add_argument("--download-workers", type=int, default=DEFAULT_DOWNLOAD_WORKERS, help="Concurrent download workers")
 	parser.add_argument("--index-type", choices=["fts", "hybrid"], default=DEFAULT_INDEX_TYPE, help="Index type: fts (FULLTEXT) or hybrid (Hybrid index)")
+	parser.add_argument("--block-timestamp-type", choices=["datetime", "bigint"], default=DEFAULT_BLOCK_TIMESTAMP_TYPE, help="block_timestamp column type: datetime (DATETIME) or bigint (BIGINT)")
 	parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
 	return parser.parse_args()
 
@@ -590,7 +716,7 @@ def main() -> None:
 	download_workers = args.download_workers
 
 	# Create new table or use existing one
-	table_name = ensure_schema(engine, create_new_table=args.create_new_table, index_type=args.index_type)
+	table_name = ensure_schema(engine, create_new_table=args.create_new_table, index_type=args.index_type, block_timestamp_type=args.block_timestamp_type)
 
 	# If source is download, download all days concurrently into one directory
 	if source == "download":
@@ -644,12 +770,96 @@ def main() -> None:
 			for batch in scanner.to_batches():
 				batch_idx += 1
 				df = batch.to_pandas(types_mapper=None)
+
+				# Print first record field information (only for the first batch of the first date)
+				if batch_idx == 1 and len(df) > 0 and d == dates[0]:
+					print("\n" + "="*100)
+					print("原始数据第一条记录字段信息 (First Record Field Information)")
+					print("="*100)
+					print(f"{'字段名称':<20} {'字段值':<50} {'字段类型':<20}")
+					print("-" * 100)
+					first_row = df.iloc[0]
+					for col in df.columns:
+						value = first_row[col]
+						# Show datetime type for block_timestamp
+						if col == "block_timestamp":
+							col_type = "datetime (Unix timestamp)"
+						else:
+							col_type = str(df[col].dtype)
+						# Handle NaN values and truncate very long values for display
+						if pd.isna(value):
+							value_str = "<NULL>"
+						else:
+							# Convert block_timestamp to datetime format for display
+							if col == "block_timestamp":
+								try:
+									# Try to convert Unix timestamp to datetime
+									if isinstance(value, (int, float)) and value > 0:
+										dt = datetime.fromtimestamp(value)
+										value_str = dt.strftime("%Y-%m-%d %H:%M:%S") + f" (timestamp: {int(value)})"
+									else:
+										value_str = str(value)
+								except (ValueError, OSError, OverflowError):
+									value_str = str(value)
+							else:
+								value_str = str(value)
+							if len(value_str) > 50:
+								value_str = value_str[:47] + "..."
+						print(f"{col:<20} {value_str:<50} {col_type:<20}")
+					print("="*100 + "\n")
 				df = normalize_hex(df)
 				# Ensure input fits TEXT column
 				df = validate_and_clean_data(df)
+				# Convert block_timestamp based on block_timestamp_type
 				if "block_timestamp" in df.columns:
-					df["block_timestamp"] = pd.to_numeric(df["block_timestamp"], errors="coerce")
+					if args.block_timestamp_type == "datetime":
+						# Convert block_timestamp from Unix timestamp to datetime
+						# Check if already datetime type - if so, skip conversion
+						if not pd.api.types.is_datetime64_any_dtype(df["block_timestamp"]):
+							# First convert to numeric to handle any string representations
+							df["block_timestamp"] = pd.to_numeric(df["block_timestamp"], errors="coerce")
+							
+							# Check if values are in milliseconds (typical for Ethereum: > 1e12) or seconds
+							sample_val = df["block_timestamp"].dropna()
+							if len(sample_val) > 0:
+								median_val = sample_val.median()
+								if median_val > 1e12:
+									# Values are in milliseconds, convert to seconds first
+									if batch_idx == 1 and d == dates[0]:
+										logging.info(f"Converting block_timestamp: detected millisecond timestamps, converting to seconds...")
+									df["block_timestamp"] = df["block_timestamp"] / 1000.0
+								elif median_val <= 0:
+									logging.error(f"Invalid timestamp values detected! Median: {median_val}")
+							
+							# Convert Unix timestamp to datetime
+							df["block_timestamp"] = pd.to_datetime(df["block_timestamp"], unit='s', errors='coerce')
+							
+							# Check for invalid dates and log warning
+							invalid_count = df["block_timestamp"].isna().sum()
+							if invalid_count > 0:
+								logging.warning(f"Found {invalid_count} invalid block_timestamp values that could not be converted to datetime")
+					else:
+						# block_timestamp_type == "bigint"
+						# Keep as numeric (Unix timestamp), ensure it's integer type
+						if not pd.api.types.is_integer_dtype(df["block_timestamp"]):
+							# Convert to numeric first
+							df["block_timestamp"] = pd.to_numeric(df["block_timestamp"], errors="coerce")
+							
+							# Check if values are in milliseconds (typical for Ethereum: > 1e12) or seconds
+							sample_val = df["block_timestamp"].dropna()
+							if len(sample_val) > 0:
+								median_val = sample_val.median()
+								if median_val > 1e12:
+									# Values are in milliseconds, convert to seconds first
+									if batch_idx == 1 and d == dates[0]:
+										logging.info(f"Converting block_timestamp: detected millisecond timestamps, converting to seconds...")
+									df["block_timestamp"] = df["block_timestamp"] / 1000.0
+							
+							# Convert to integer (Unix timestamp in seconds)
+							df["block_timestamp"] = df["block_timestamp"].astype('Int64')  # Nullable integer type
 				df["date"] = str(d)
+				# Generate random boolean values for random_flag column
+				df["random_flag"] = [random.choice([True, False]) for _ in range(len(df))]
 				if len(df) == 0:
 					continue
 				for start in range(0, len(df), chunksize):
@@ -663,7 +873,7 @@ def main() -> None:
 					total_rows += len(df)
 			logging.info("Date %s import complete, total rows: %d", d, total_rows)
 		elif source == "s3":
-			import_one_day(d, engine, table_name, chunksize=chunksize, batch_size=batch_size, use_bulk_insert=not args.no_bulk_insert, verbose=args.verbose, download_local=False, download_timeout=download_timeout, download_retries=download_retries)
+			import_one_day(d, engine, table_name, chunksize=chunksize, batch_size=batch_size, use_bulk_insert=not args.no_bulk_insert, verbose=args.verbose, download_local=False, download_timeout=download_timeout, download_retries=download_retries, block_timestamp_type=args.block_timestamp_type)
 
 
 if __name__ == "__main__":
