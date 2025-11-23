@@ -19,6 +19,22 @@ def configure_logging() -> None:
 	)
 
 
+def fetch_total_count(engine: Engine, table_name: str) -> int:
+	"""Execute SQL: SELECT COUNT(*) FROM table_name to get total row count"""
+	stmt = text(f"SELECT COUNT(*) FROM test.{table_name}")
+	with engine.connect() as conn:
+		result = conn.execute(stmt).scalar()
+		return int(result or 0)
+
+
+def fetch_distinct_days_count(engine: Engine, table_name: str) -> int:
+	"""Execute SQL: SELECT COUNT(DISTINCT date) FROM table_name to get number of distinct dates"""
+	stmt = text(f"SELECT COUNT(DISTINCT date) FROM test.{table_name}")
+	with engine.connect() as conn:
+		result = conn.execute(stmt).scalar()
+		return int(result or 0)
+
+
 def fetch_daily_counts_groupby(engine: Engine, table_name: str) -> List[Tuple[str, int]]:
 	"""Execute first SQL: SELECT COUNT(*), date FROM table_name GROUP BY date"""
 	stmt = text(f"SELECT COUNT(*), date FROM test.{table_name} GROUP BY date ORDER BY date")
@@ -46,6 +62,23 @@ def main() -> None:
 		sys.exit(1)
 	
 	logging.info("Found latest table: %s", latest_table)
+	
+	# Count total rows in the table
+	logging.info("Counting total rows in table %s...", latest_table)
+	start_time = time.perf_counter()
+	total_count = fetch_total_count(engine, latest_table)
+	elapsed_ms_total = (time.perf_counter() - start_time) * 1000.0
+	logging.info("Total row count: %d (took %.2f ms)", total_count, elapsed_ms_total)
+	
+	# Count distinct days in the table
+	logging.info("Counting distinct days in table %s...", latest_table)
+	start_time = time.perf_counter()
+	distinct_days = fetch_distinct_days_count(engine, latest_table)
+	elapsed_ms_days = (time.perf_counter() - start_time) * 1000.0
+	logging.info("Distinct days count: %d (took %.2f ms)", distinct_days, elapsed_ms_days)
+	
+	print(f"\nTotal rows in table {latest_table}: {total_count:,}")
+	print(f"Total distinct days: {distinct_days}")
 	
 	# Execute first SQL: GROUP BY date
 	logging.info("Executing first SQL: SELECT COUNT(*), date FROM %s GROUP BY date", latest_table)
