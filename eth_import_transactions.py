@@ -27,13 +27,13 @@ def configure_logging(verbose: bool = False) -> None:
 
 
 # Module-level defaults (edit here to change behavior without CLI)
-DEFAULT_START_DATE = "2025-10-23"
-DEFAULT_DAYS = 1 # total 45 days
+DEFAULT_START_DATE = "2025-10-25"
+DEFAULT_DAYS = 32 # total 45 days
 DEFAULT_CHUNKSIZE = 5000
 DEFAULT_BATCH_SIZE = 5000
 DEFAULT_SOURCE = "local"  # download | local | s3
 DEFAULT_LOCAL_DIR = "local_data_multi"
-DEFAULT_CREATE_NEW_TABLE = False
+DEFAULT_CREATE_NEW_TABLE = True 
 DEFAULT_DOWNLOAD_TIMEOUT = 300
 DEFAULT_DOWNLOAD_RETRIES = 3
 DEFAULT_DOWNLOAD_WORKERS = 8
@@ -740,140 +740,144 @@ def main() -> None:
 
 	# Sequentially import per day, reading local if available
 	for d in dates:
-		if source in ("download", "local"):
-			# Build local file list by date prefix
-			if not os.path.isdir(local_dir):
-				logging.error("Local directory not found: %s", local_dir)
-				sys.exit(2)
-			local_files = [os.path.join(local_dir, f) for f in os.listdir(local_dir) if f.startswith(f"{d}__") and f.endswith('.parquet')]
-			if not local_files:
-				logging.error("No local files found for date=%s in %s", d, local_dir)
-				sys.exit(2)
-			# Temporarily adapt import_one_day: call with fake fs path list by using local-only branch
-			# We reuse import_one_day by bypassing S3 discovery: set download_local=False and fake S3 listing via monkey list
-			# Easiest: create dataset directly here and reuse inner logic? For simplicity, call import_one_day but with download_local=False after swapping _list_parquet_files? Instead, run a small local import loop here:
-			logging.info("Importing from local files for date=%s (files=%d)", d, len(local_files))
-			# Create dataset
-			dataset = ds.dataset(local_files, format="parquet")
-			available = set(dataset.schema.names)
-			selected_columns = [c for c in PREFERRED_COLUMNS if c in available]
-			missing = [c for c in PREFERRED_COLUMNS if c not in available]
-			not_selected = [c for c in available if c not in PREFERRED_COLUMNS]
-			logging.info("Schema columns available=%d, selected=%d, missing=%d", len(available), len(selected_columns), len(missing))
-			if missing:
-				logging.warning("Missing columns skipped: %s", ", ".join(missing))
-			if not_selected:
-				logging.info("Available columns not selected: %s", ", ".join(sorted(not_selected)))
-			scanner = dataset.scanner(columns=selected_columns, batch_size=batch_size)
-			batch_idx = 0
-			total_rows = 0
-			for batch in scanner.to_batches():
-				batch_idx += 1
-				df = batch.to_pandas(types_mapper=None)
-
-				# Print first record field information (only for the first batch of the first date)
-				if batch_idx == 1 and len(df) > 0 and d == dates[0]:
-					print("\n" + "="*100)
-					print("原始数据第一条记录字段信息 (First Record Field Information)")
-					print("="*100)
-					print(f"{'字段名称':<20} {'字段值':<50} {'字段类型':<20}")
-					print("-" * 100)
-					first_row = df.iloc[0]
-					for col in df.columns:
-						value = first_row[col]
-						# Show datetime type for block_timestamp
-						if col == "block_timestamp":
-							col_type = "datetime (Unix timestamp)"
-						else:
-							col_type = str(df[col].dtype)
-						# Handle NaN values and truncate very long values for display
-						if pd.isna(value):
-							value_str = "<NULL>"
-						else:
-							# Convert block_timestamp to datetime format for display
-							if col == "block_timestamp":
-								try:
-									# Try to convert Unix timestamp to datetime
-									if isinstance(value, (int, float)) and value > 0:
-										dt = datetime.fromtimestamp(value)
-										value_str = dt.strftime("%Y-%m-%d %H:%M:%S") + f" (timestamp: {int(value)})"
-									else:
-										value_str = str(value)
-								except (ValueError, OSError, OverflowError):
-									value_str = str(value)
-							else:
-								value_str = str(value)
-							if len(value_str) > 50:
-								value_str = value_str[:47] + "..."
-						print(f"{col:<20} {value_str:<50} {col_type:<20}")
-					print("="*100 + "\n")
-				df = normalize_hex(df)
-				# Ensure input fits TEXT column
-				df = validate_and_clean_data(df)
-				# Convert block_timestamp based on block_timestamp_type
-				if "block_timestamp" in df.columns:
-					if args.block_timestamp_type == "datetime":
-						# Convert block_timestamp from Unix timestamp to datetime
-						# Check if already datetime type - if so, skip conversion
-						if not pd.api.types.is_datetime64_any_dtype(df["block_timestamp"]):
-							# First convert to numeric to handle any string representations
-							df["block_timestamp"] = pd.to_numeric(df["block_timestamp"], errors="coerce")
-							
-							# Check if values are in milliseconds (typical for Ethereum: > 1e12) or seconds
-							sample_val = df["block_timestamp"].dropna()
-							if len(sample_val) > 0:
-								median_val = sample_val.median()
-								if median_val > 1e12:
-									# Values are in milliseconds, convert to seconds first
-									if batch_idx == 1 and d == dates[0]:
-										logging.info(f"Converting block_timestamp: detected millisecond timestamps, converting to seconds...")
-									df["block_timestamp"] = df["block_timestamp"] / 1000.0
-								elif median_val <= 0:
-									logging.error(f"Invalid timestamp values detected! Median: {median_val}")
-							
-							# Convert Unix timestamp to datetime
-							df["block_timestamp"] = pd.to_datetime(df["block_timestamp"], unit='s', errors='coerce')
-							
-							# Check for invalid dates and log warning
-							invalid_count = df["block_timestamp"].isna().sum()
-							if invalid_count > 0:
-								logging.warning(f"Found {invalid_count} invalid block_timestamp values that could not be converted to datetime")
-					else:
-						# block_timestamp_type == "bigint"
-						# Keep as numeric (Unix timestamp), ensure it's integer type
-						if not pd.api.types.is_integer_dtype(df["block_timestamp"]):
-							# Convert to numeric first
-							df["block_timestamp"] = pd.to_numeric(df["block_timestamp"], errors="coerce")
-							
-							# Check if values are in milliseconds (typical for Ethereum: > 1e12) or seconds
-							sample_val = df["block_timestamp"].dropna()
-							if len(sample_val) > 0:
-								median_val = sample_val.median()
-								if median_val > 1e12:
-									# Values are in milliseconds, convert to seconds first
-									if batch_idx == 1 and d == dates[0]:
-										logging.info(f"Converting block_timestamp: detected millisecond timestamps, converting to seconds...")
-									df["block_timestamp"] = df["block_timestamp"] / 1000.0
-							
-							# Convert to integer (Unix timestamp in seconds)
-							df["block_timestamp"] = df["block_timestamp"].astype('Int64')  # Nullable integer type
-				df["date"] = str(d)
-				# Generate random boolean values for random_flag column
-				df["random_flag"] = [random.choice([True, False]) for _ in range(len(df))]
-				if len(df) == 0:
+		try:
+			if source in ("download", "local"):
+				# Build local file list by date prefix
+				if not os.path.isdir(local_dir):
+					logging.warning("Local directory not found: %s, skipping date=%s", local_dir, d)
 					continue
-				for start in range(0, len(df), chunksize):
-					end = min(start + chunksize, len(df))
-					chunk = df.iloc[start:end].copy()
-					with engine.begin() as conn:
-						try:
-							bulk_insert_chunk(conn, chunk, table_name)
-						except Exception:
-							chunk.to_sql(table_name, con=conn, schema="eth", if_exists="append", index=False, method="multi", chunksize=None)
-					total_rows += len(df)
-			logging.info("Date %s import complete, total rows: %d", d, total_rows)
-		elif source == "s3":
-			import_one_day(d, engine, table_name, chunksize=chunksize, batch_size=batch_size, use_bulk_insert=not args.no_bulk_insert, verbose=args.verbose, download_local=False, download_timeout=download_timeout, download_retries=download_retries, block_timestamp_type=args.block_timestamp_type)
+				local_files = [os.path.join(local_dir, f) for f in os.listdir(local_dir) if f.startswith(f"{d}__") and f.endswith('.parquet')]
+				if not local_files:
+					logging.warning("No local files found for date=%s in %s, skipping this date", d, local_dir)
+					continue
+				# Temporarily adapt import_one_day: call with fake fs path list by using local-only branch
+				# We reuse import_one_day by bypassing S3 discovery: set download_local=False and fake S3 listing via monkey list
+				# Easiest: create dataset directly here and reuse inner logic? For simplicity, call import_one_day but with download_local=False after swapping _list_parquet_files? Instead, run a small local import loop here:
+				logging.info("Importing from local files for date=%s (files=%d)", d, len(local_files))
+				# Create dataset
+				dataset = ds.dataset(local_files, format="parquet")
+				available = set(dataset.schema.names)
+				selected_columns = [c for c in PREFERRED_COLUMNS if c in available]
+				missing = [c for c in PREFERRED_COLUMNS if c not in available]
+				not_selected = [c for c in available if c not in PREFERRED_COLUMNS]
+				logging.info("Schema columns available=%d, selected=%d, missing=%d", len(available), len(selected_columns), len(missing))
+				if missing:
+					logging.warning("Missing columns skipped: %s", ", ".join(missing))
+				if not_selected:
+					logging.info("Available columns not selected: %s", ", ".join(sorted(not_selected)))
+				scanner = dataset.scanner(columns=selected_columns, batch_size=batch_size)
+				batch_idx = 0
+				total_rows = 0
+				for batch in scanner.to_batches():
+					batch_idx += 1
+					df = batch.to_pandas(types_mapper=None)
+
+					# Print first record field information (only for the first batch of the first date)
+					if batch_idx == 1 and len(df) > 0 and d == dates[0]:
+						print("\n" + "="*100)
+						print("原始数据第一条记录字段信息 (First Record Field Information)")
+						print("="*100)
+						print(f"{'字段名称':<20} {'字段值':<50} {'字段类型':<20}")
+						print("-" * 100)
+						first_row = df.iloc[0]
+						for col in df.columns:
+							value = first_row[col]
+							# Show datetime type for block_timestamp
+							if col == "block_timestamp":
+								col_type = "datetime (Unix timestamp)"
+							else:
+								col_type = str(df[col].dtype)
+							# Handle NaN values and truncate very long values for display
+							if pd.isna(value):
+								value_str = "<NULL>"
+							else:
+								# Convert block_timestamp to datetime format for display
+								if col == "block_timestamp":
+									try:
+										# Try to convert Unix timestamp to datetime
+										if isinstance(value, (int, float)) and value > 0:
+											dt = datetime.fromtimestamp(value)
+											value_str = dt.strftime("%Y-%m-%d %H:%M:%S") + f" (timestamp: {int(value)})"
+										else:
+											value_str = str(value)
+									except (ValueError, OSError, OverflowError):
+										value_str = str(value)
+								else:
+									value_str = str(value)
+								if len(value_str) > 50:
+									value_str = value_str[:47] + "..."
+							print(f"{col:<20} {value_str:<50} {col_type:<20}")
+						print("="*100 + "\n")
+					df = normalize_hex(df)
+					# Ensure input fits TEXT column
+					df = validate_and_clean_data(df)
+					# Convert block_timestamp based on block_timestamp_type
+					if "block_timestamp" in df.columns:
+						if args.block_timestamp_type == "datetime":
+							# Convert block_timestamp from Unix timestamp to datetime
+							# Check if already datetime type - if so, skip conversion
+							if not pd.api.types.is_datetime64_any_dtype(df["block_timestamp"]):
+								# First convert to numeric to handle any string representations
+								df["block_timestamp"] = pd.to_numeric(df["block_timestamp"], errors="coerce")
+								
+								# Check if values are in milliseconds (typical for Ethereum: > 1e12) or seconds
+								sample_val = df["block_timestamp"].dropna()
+								if len(sample_val) > 0:
+									median_val = sample_val.median()
+									if median_val > 1e12:
+										# Values are in milliseconds, convert to seconds first
+										if batch_idx == 1 and d == dates[0]:
+											logging.info(f"Converting block_timestamp: detected millisecond timestamps, converting to seconds...")
+										df["block_timestamp"] = df["block_timestamp"] / 1000.0
+									elif median_val <= 0:
+										logging.error(f"Invalid timestamp values detected! Median: {median_val}")
+								
+								# Convert Unix timestamp to datetime
+								df["block_timestamp"] = pd.to_datetime(df["block_timestamp"], unit='s', errors='coerce')
+								
+								# Check for invalid dates and log warning
+								invalid_count = df["block_timestamp"].isna().sum()
+								if invalid_count > 0:
+									logging.warning(f"Found {invalid_count} invalid block_timestamp values that could not be converted to datetime")
+						else:
+							# block_timestamp_type == "bigint"
+							# Keep as numeric (Unix timestamp), ensure it's integer type
+							if not pd.api.types.is_integer_dtype(df["block_timestamp"]):
+								# Convert to numeric first
+								df["block_timestamp"] = pd.to_numeric(df["block_timestamp"], errors="coerce")
+								
+								# Check if values are in milliseconds (typical for Ethereum: > 1e12) or seconds
+								sample_val = df["block_timestamp"].dropna()
+								if len(sample_val) > 0:
+									median_val = sample_val.median()
+									if median_val > 1e12:
+										# Values are in milliseconds, convert to seconds first
+										if batch_idx == 1 and d == dates[0]:
+											logging.info(f"Converting block_timestamp: detected millisecond timestamps, converting to seconds...")
+										df["block_timestamp"] = df["block_timestamp"] / 1000.0
+								
+								# Convert to integer (Unix timestamp in seconds)
+								df["block_timestamp"] = df["block_timestamp"].astype('Int64')  # Nullable integer type
+					df["date"] = str(d)
+					# Generate random boolean values for random_flag column
+					df["random_flag"] = [random.choice([True, False]) for _ in range(len(df))]
+					if len(df) == 0:
+						continue
+					for start in range(0, len(df), chunksize):
+						end = min(start + chunksize, len(df))
+						chunk = df.iloc[start:end].copy()
+						with engine.begin() as conn:
+							try:
+								bulk_insert_chunk(conn, chunk, table_name)
+							except Exception:
+								chunk.to_sql(table_name, con=conn, schema="eth", if_exists="append", index=False, method="multi", chunksize=None)
+						total_rows += len(df)
+				logging.info("Date %s import complete, total rows: %d", d, total_rows)
+			elif source == "s3":
+				import_one_day(d, engine, table_name, chunksize=chunksize, batch_size=batch_size, use_bulk_insert=not args.no_bulk_insert, verbose=args.verbose, download_local=False, download_timeout=download_timeout, download_retries=download_retries, block_timestamp_type=args.block_timestamp_type)
+		except Exception as e:
+			logging.error("Error processing date=%s: %s, skipping this date and continuing with next date", d, str(e), exc_info=args.verbose)
+			continue
 
 
 if __name__ == "__main__":

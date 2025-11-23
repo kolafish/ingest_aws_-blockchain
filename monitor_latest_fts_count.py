@@ -13,7 +13,7 @@ from eth_import_transactions import get_engine
 
 # Configuration: start date and number of days to query backwards
 DEFAULT_START_DATE = "2025-10-25"
-DEFAULT_DAYS = 21
+DEFAULT_DAYS = 32
 
 
 def configure_logging() -> None:
