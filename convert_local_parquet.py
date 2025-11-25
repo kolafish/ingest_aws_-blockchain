@@ -34,9 +34,9 @@ DEFAULT_COMPRESSION = "snappy"
 
 MIN_UNIX_SECONDS = int(pd.Timestamp.min.timestamp())
 MAX_UNIX_SECONDS = int(pd.Timestamp.max.timestamp())
-MILLISECOND_THRESHOLD = 1e11  # seconds ~ 3,171 years, good enough to distinguish ms
-MICROSECOND_THRESHOLD = 1e13
-NANOSECOND_THRESHOLD = 1e15
+MILLISECOND_THRESHOLD = 1e12  # Use 1e12 to match eth_import_transactions.py logic (Ethereum timestamps are typically ~1.6e12 ms)
+MICROSECOND_THRESHOLD = 1e15
+NANOSECOND_THRESHOLD = 1e18
 
 TABLE_COLUMNS = [
 	"date",
