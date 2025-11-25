@@ -29,12 +29,11 @@ from eth_import_transactions import (  # noqa: E402
 
 DEFAULT_BATCH_SIZE = 5000
 DEFAULT_OUTPUT_DIR = "converted_parquet"
-DEFAULT_BLOCK_TIMESTAMP_TYPE = "bigint"
 DEFAULT_COMPRESSION = "snappy"
 
 MIN_UNIX_SECONDS = int(pd.Timestamp.min.timestamp())
 MAX_UNIX_SECONDS = int(pd.Timestamp.max.timestamp())
-MILLISECOND_THRESHOLD = 1e12  # Use 1e12 to match eth_import_transactions.py logic (Ethereum timestamps are typically ~1.6e12 ms)
+MILLISECOND_THRESHOLD = 1e12  # Detect millisecond Unix timestamps (~1.6e12 today)
 MICROSECOND_THRESHOLD = 1e15
 NANOSECOND_THRESHOLD = 1e18
 
@@ -151,56 +150,41 @@ def _coerce_datetime_direct(series: pd.Series, context: str) -> Optional[pd.Seri
 	return dt
 
 
-def convert_block_timestamp(df: pd.DataFrame, block_timestamp_type: str, context: str) -> pd.DataFrame:
+def convert_block_timestamp(df: pd.DataFrame, context: str) -> pd.DataFrame:
 	if "block_timestamp" not in df.columns:
 		return df
 	original_series = df["block_timestamp"]
 	numeric_seconds = _coerce_numeric_seconds(original_series, context)
-	fallback_used = False
 
 	if numeric_seconds is not None:
-		if block_timestamp_type == "datetime":
-			with np.errstate(all="ignore"):
-				converted = pd.to_datetime(numeric_seconds, unit="s", errors="coerce")
-		else:
-			converted = numeric_seconds
+		converted = numeric_seconds
 	else:
 		converted = None
 
 	if converted is None or converted.notna().sum() == 0:
-		fallback_used = True
 		direct_dt = _coerce_datetime_direct(original_series, context)
 		if direct_dt is None:
 			logging.warning("%s block_timestamp conversion failed (no numeric or datetime values); dropping batch", context)
 			return df.iloc[0:0]
-		if block_timestamp_type == "datetime":
-			converted = direct_dt
-		else:
-			seconds = (direct_dt.view("int64") // 1_000_000_000).astype("float64")
-			seconds[pd.isna(direct_dt)] = np.nan
-			converted = pd.Series(seconds, index=direct_dt.index, dtype="float64")
+		seconds = (direct_dt.view("int64") // 1_000_000_000).astype("float64")
+		seconds[pd.isna(direct_dt)] = np.nan
+		converted = pd.Series(seconds, index=direct_dt.index, dtype="float64")
 
 	valid_mask = converted.notna()
 	if not valid_mask.any():
-		logging.warning("%s no valid block_timestamp values remain after %s conversion; dropping batch", context, "fallback" if fallback_used else "numeric")
+		logging.warning("%s no valid block_timestamp values remain after conversion; dropping batch", context)
 		return df.iloc[0:0]
 
 	dropped = (~valid_mask).sum()
 	if dropped > 0:
 		logging.warning(
-			"%s dropping %d rows with invalid block_timestamp (%s path)",
+			"%s dropping %d rows with invalid block_timestamp",
 			context,
 			dropped,
-			"fallback" if fallback_used else "numeric",
 		)
 
 	df = df.loc[valid_mask].copy()
-	if block_timestamp_type == "datetime":
-		if pd_types.is_datetime64tz_dtype(converted.dtype):
-			converted = converted.dt.tz_convert(None)
-		df["block_timestamp"] = converted.loc[valid_mask]
-	else:
-		df["block_timestamp"] = converted.loc[valid_mask].round().astype("Int64")
+	df["block_timestamp"] = converted.loc[valid_mask].round().astype("Int64")
 	return df
 
 
@@ -224,7 +208,6 @@ def process_file(
 	file_path: Path,
 	output_path: Path,
 	date_str: str,
-	block_timestamp_type: str,
 	batch_size: int,
 	compression: str,
 ) -> int:
@@ -249,7 +232,7 @@ def process_file(
 			continue
 		df = normalize_hex(df)
 		df = validate_and_clean_data(df)
-		df = convert_block_timestamp(df, block_timestamp_type, f"{log_prefix} batch#{batch_idx}")
+		df = convert_block_timestamp(df, f"{log_prefix} batch#{batch_idx}")
 		if df.empty:
 			logging.warning("%s batch #%d skipped because block_timestamp conversion removed all rows", log_prefix, batch_idx)
 			continue
@@ -275,7 +258,6 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--date", help="Override date value for all files (YYYY-MM-DD).")
 	parser.add_argument("--recursive", action="store_true", help="Search input directory recursively.")
 	parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="PyArrow scanner batch size.")
-	parser.add_argument("--block-timestamp-type", choices=["datetime", "bigint"], default=DEFAULT_BLOCK_TIMESTAMP_TYPE, help="Output block_timestamp type.")
 	parser.add_argument("--compression", default=DEFAULT_COMPRESSION, help="Compression codec for output parquet files.")
 	parser.add_argument("--overwrite", action="store_true", help="Overwrite existing files in output directory.")
 	parser.add_argument("--limit", type=int, help="Process at most this many files.")
@@ -313,7 +295,6 @@ def main() -> None:
 			file_path=file_path,
 			output_path=output_path,
 			date_str=date_str,
-			block_timestamp_type=args.block_timestamp_type,
 			batch_size=args.batch_size,
 			compression=args.compression,
 		)
