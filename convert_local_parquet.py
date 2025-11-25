@@ -7,6 +7,7 @@ expected by eth_import_transactions before writing them back as parquet.
 import argparse
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional
 
@@ -30,6 +31,7 @@ from eth_import_transactions import (  # noqa: E402
 DEFAULT_BATCH_SIZE = 5000
 DEFAULT_OUTPUT_DIR = "converted_parquet"
 DEFAULT_COMPRESSION = "snappy"
+DEFAULT_WORKERS = 4
 
 MIN_UNIX_SECONDS = int(pd.Timestamp.min.timestamp())
 MAX_UNIX_SECONDS = int(pd.Timestamp.max.timestamp())
@@ -245,9 +247,18 @@ def process_file(
 		total_rows += len(df)
 	if writer is not None:
 		writer.close()
-		logging.info("%s wrote %d rows to %s", log_prefix, total_rows, output_path)
+		if total_rows == 0:
+			logging.warning("%s no data written (all rows filtered out), deleting output file", log_prefix)
+			if output_path.exists():
+				output_path.unlink()
+				logging.info("%s deleted empty output file: %s", log_prefix, output_path)
+		else:
+			logging.info("%s wrote %d rows to %s", log_prefix, total_rows, output_path)
 	else:
 		logging.warning("%s no data written (empty source)", log_prefix)
+		if output_path.exists():
+			output_path.unlink()
+			logging.info("%s deleted empty output file: %s", log_prefix, output_path)
 	return total_rows
 
 
@@ -261,6 +272,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--compression", default=DEFAULT_COMPRESSION, help="Compression codec for output parquet files.")
 	parser.add_argument("--overwrite", action="store_true", help="Overwrite existing files in output directory.")
 	parser.add_argument("--limit", type=int, help="Process at most this many files.")
+	parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Number of parallel workers for file conversion.")
 	parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging.")
 	return parser.parse_args()
 
@@ -279,8 +291,10 @@ def main() -> None:
 	if not files:
 		logging.warning("No parquet files found under %s", input_dir)
 		return
-	logging.info("Found %d parquet file(s) to process", len(files))
-	total_rows = 0
+	logging.info("Found %d parquet file(s) to process with %d worker(s)", len(files), args.workers)
+	
+	# Prepare file tasks
+	tasks = []
 	for file_path in files:
 		try:
 			date_str = infer_date(file_path, args.date)
@@ -291,14 +305,38 @@ def main() -> None:
 		if output_path.exists() and not args.overwrite:
 			logging.info("Skipping %s because output exists (use --overwrite to replace)", output_path)
 			continue
-		rows = process_file(
-			file_path=file_path,
-			output_path=output_path,
-			date_str=date_str,
-			batch_size=args.batch_size,
-			compression=args.compression,
-		)
-		total_rows += rows
+		tasks.append((file_path, output_path, date_str))
+	
+	if not tasks:
+		logging.warning("No files to process after filtering")
+		return
+	
+	# Process files in parallel
+	total_rows = 0
+	completed_files = 0
+	with ThreadPoolExecutor(max_workers=args.workers) as executor:
+		futures = {
+			executor.submit(
+				process_file,
+				file_path=file_path,
+				output_path=output_path,
+				date_str=date_str,
+				batch_size=args.batch_size,
+				compression=args.compression,
+			): file_path
+			for file_path, output_path, date_str in tasks
+		}
+		
+		for future in as_completed(futures):
+			file_path = futures[future]
+			try:
+				rows = future.result()
+				total_rows += rows
+				completed_files += 1
+				logging.info("Progress: %d/%d files completed, total rows: %d", completed_files, len(tasks), total_rows)
+			except Exception as exc:
+				logging.error("Error processing %s: %s", file_path.name, exc, exc_info=args.verbose)
+	
 	logging.info("Done. Total rows written: %d", total_rows)
 
 
