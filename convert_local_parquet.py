@@ -33,6 +33,9 @@ DEFAULT_COMPRESSION = "snappy"
 
 MIN_UNIX_SECONDS = int(pd.Timestamp.min.timestamp())
 MAX_UNIX_SECONDS = int(pd.Timestamp.max.timestamp())
+MILLISECOND_THRESHOLD = 1e11  # seconds ~ 3,171 years, good enough to distinguish ms
+MICROSECOND_THRESHOLD = 1e13
+NANOSECOND_THRESHOLD = 1e15
 
 TABLE_COLUMNS = [
 	"date",
@@ -95,6 +98,26 @@ def infer_date(file_path: Path, explicit_date: Optional[str]) -> str:
 	raise ValueError(f"Unable to infer date for file: {file_path}")
 
 
+def normalize_unix_seconds(series: pd.Series, context: str) -> pd.Series:
+	sample_val = series.dropna()
+	if len(sample_val) == 0:
+		return series
+	median_val = sample_val.median()
+	if median_val <= 0:
+		logging.error("%s invalid timestamp median value: %s", context, median_val)
+		return series
+	if median_val > NANOSECOND_THRESHOLD:
+		logging.info("%s detected nanosecond timestamps, converting to seconds", context)
+		return series / 1_000_000_000.0
+	if median_val > MICROSECOND_THRESHOLD:
+		logging.info("%s detected microsecond timestamps, converting to seconds", context)
+		return series / 1_000_000.0
+	if median_val > MILLISECOND_THRESHOLD:
+		logging.info("%s detected millisecond timestamps, converting to seconds", context)
+		return series / 1_000.0
+	return series
+
+
 def convert_block_timestamp(df: pd.DataFrame, block_timestamp_type: str, context: str) -> pd.DataFrame:
 	if "block_timestamp" not in df.columns:
 		return df
@@ -109,14 +132,7 @@ def convert_block_timestamp(df: pd.DataFrame, block_timestamp_type: str, context
 					non_finite_mask.sum(),
 				)
 				df.loc[non_finite_mask, "block_timestamp"] = pd.NA
-			sample_val = df["block_timestamp"].dropna()
-			if len(sample_val) > 0:
-				median_val = sample_val.median()
-				if median_val > 1e12:
-					logging.info("%s detected millisecond timestamps, converting to seconds", context)
-					df["block_timestamp"] = df["block_timestamp"] / 1000.0
-				elif median_val <= 0:
-					logging.error("%s invalid timestamp median value: %s", context, median_val)
+			df["block_timestamp"] = normalize_unix_seconds(df["block_timestamp"], context)
 			out_of_range_mask = df["block_timestamp"].notna() & ~df["block_timestamp"].between(MIN_UNIX_SECONDS, MAX_UNIX_SECONDS)
 			if out_of_range_mask.any():
 				logging.warning(
@@ -144,12 +160,7 @@ def convert_block_timestamp(df: pd.DataFrame, block_timestamp_type: str, context
 					non_finite_mask.sum(),
 				)
 				df.loc[non_finite_mask, "block_timestamp"] = pd.NA
-			sample_val = df["block_timestamp"].dropna()
-			if len(sample_val) > 0:
-				median_val = sample_val.median()
-				if median_val > 1e12:
-					logging.info("%s detected millisecond timestamps, converting to seconds", context)
-					df["block_timestamp"] = df["block_timestamp"] / 1000.0
+			df["block_timestamp"] = normalize_unix_seconds(df["block_timestamp"], context)
 			out_of_range_mask = df["block_timestamp"].notna() & ~df["block_timestamp"].between(MIN_UNIX_SECONDS, MAX_UNIX_SECONDS)
 			if out_of_range_mask.any():
 				logging.warning(
