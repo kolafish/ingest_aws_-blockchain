@@ -30,6 +30,9 @@ DEFAULT_OUTPUT_DIR = "converted_parquet"
 DEFAULT_BLOCK_TIMESTAMP_TYPE = "bigint"
 DEFAULT_COMPRESSION = "snappy"
 
+MIN_UNIX_SECONDS = int(pd.Timestamp.min.timestamp())
+MAX_UNIX_SECONDS = int(pd.Timestamp.max.timestamp())
+
 TABLE_COLUMNS = [
 	"date",
 	"hash",
@@ -105,6 +108,14 @@ def convert_block_timestamp(df: pd.DataFrame, block_timestamp_type: str, context
 					df["block_timestamp"] = df["block_timestamp"] / 1000.0
 				elif median_val <= 0:
 					logging.error("%s invalid timestamp median value: %s", context, median_val)
+			out_of_range_mask = df["block_timestamp"].notna() & ~df["block_timestamp"].between(MIN_UNIX_SECONDS, MAX_UNIX_SECONDS)
+			if out_of_range_mask.any():
+				logging.warning(
+					"%s found %d block_timestamp values outside pandas datetime range; setting to NaN",
+					context,
+					out_of_range_mask.sum(),
+				)
+				df.loc[out_of_range_mask, "block_timestamp"] = pd.NA
 			df["block_timestamp"] = pd.to_datetime(df["block_timestamp"], unit="s", errors="coerce")
 			invalid_count = df["block_timestamp"].isna().sum()
 			if invalid_count > 0:
@@ -118,6 +129,14 @@ def convert_block_timestamp(df: pd.DataFrame, block_timestamp_type: str, context
 				if median_val > 1e12:
 					logging.info("%s detected millisecond timestamps, converting to seconds", context)
 					df["block_timestamp"] = df["block_timestamp"] / 1000.0
+			out_of_range_mask = df["block_timestamp"].notna() & ~df["block_timestamp"].between(MIN_UNIX_SECONDS, MAX_UNIX_SECONDS)
+			if out_of_range_mask.any():
+				logging.warning(
+					"%s found %d block_timestamp values outside supported bigint range; setting to NaN",
+					context,
+					out_of_range_mask.sum(),
+				)
+				df.loc[out_of_range_mask, "block_timestamp"] = pd.NA
 			df["block_timestamp"] = df["block_timestamp"].astype("Int64")
 	return df
 
