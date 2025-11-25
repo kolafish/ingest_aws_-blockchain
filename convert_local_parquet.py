@@ -126,13 +126,13 @@ def convert_block_timestamp(df: pd.DataFrame, block_timestamp_type: str, context
 				)
 				df.loc[out_of_range_mask, "block_timestamp"] = pd.NA
 			if df["block_timestamp"].notna().sum() == 0:
-				logging.warning("%s no valid block_timestamp values remain; leaving as NaT", context)
-				df["block_timestamp"] = pd.NaT
-				return df
+				logging.warning("%s no valid block_timestamp values remain; dropping entire batch", context)
+				return df.iloc[0:0]
 			df["block_timestamp"] = pd.to_datetime(df["block_timestamp"], unit="s", errors="coerce")
-			invalid_count = df["block_timestamp"].isna().sum()
-			if invalid_count > 0:
-				logging.warning("%s found %d invalid block_timestamp values", context, invalid_count)
+			invalid_mask = df["block_timestamp"].isna()
+			if invalid_mask.any():
+				logging.warning("%s dropping %d rows with invalid block_timestamp after conversion", context, invalid_mask.sum())
+				df = df[~invalid_mask].copy()
 	else:
 		if not pd.api.types.is_integer_dtype(df["block_timestamp"]):
 			df["block_timestamp"] = pd.to_numeric(df["block_timestamp"], errors="coerce").astype("float64")
@@ -159,10 +159,14 @@ def convert_block_timestamp(df: pd.DataFrame, block_timestamp_type: str, context
 				)
 				df.loc[out_of_range_mask, "block_timestamp"] = pd.NA
 			if df["block_timestamp"].notna().sum() == 0:
-				logging.warning("%s no valid block_timestamp values remain; leaving as NULL", context)
-				df["block_timestamp"] = pd.NA
-				return df
-			df["block_timestamp"] = df["block_timestamp"].round().astype("Int64")
+				logging.warning("%s no valid block_timestamp values remain; dropping entire batch", context)
+				return df.iloc[0:0]
+			df["block_timestamp"] = df["block_timestamp"].round()
+			invalid_mask = df["block_timestamp"].isna()
+			if invalid_mask.any():
+				logging.warning("%s dropping %d rows with invalid block_timestamp before integer cast", context, invalid_mask.sum())
+				df = df[~invalid_mask].copy()
+			df["block_timestamp"] = df["block_timestamp"].astype("Int64")
 	return df
 
 
@@ -212,6 +216,9 @@ def process_file(
 		df = normalize_hex(df)
 		df = validate_and_clean_data(df)
 		df = convert_block_timestamp(df, block_timestamp_type, f"{log_prefix} batch#{batch_idx}")
+		if df.empty:
+			logging.warning("%s batch #%d skipped because block_timestamp conversion removed all rows", log_prefix, batch_idx)
+			continue
 		df["date"] = date_str
 		df = ensure_all_columns(df)
 		table = pa.Table.from_pandas(df, preserve_index=False)
