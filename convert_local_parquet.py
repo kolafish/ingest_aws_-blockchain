@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
@@ -99,7 +100,15 @@ def convert_block_timestamp(df: pd.DataFrame, block_timestamp_type: str, context
 		return df
 	if block_timestamp_type == "datetime":
 		if not pd.api.types.is_datetime64_any_dtype(df["block_timestamp"]):
-			df["block_timestamp"] = pd.to_numeric(df["block_timestamp"], errors="coerce")
+			df["block_timestamp"] = pd.to_numeric(df["block_timestamp"], errors="coerce").astype("float64")
+			non_finite_mask = ~np.isfinite(df["block_timestamp"])
+			if non_finite_mask.any():
+				logging.warning(
+					"%s found %d non-finite block_timestamp values; setting to NaN",
+					context,
+					non_finite_mask.sum(),
+				)
+				df.loc[non_finite_mask, "block_timestamp"] = pd.NA
 			sample_val = df["block_timestamp"].dropna()
 			if len(sample_val) > 0:
 				median_val = sample_val.median()
@@ -116,13 +125,25 @@ def convert_block_timestamp(df: pd.DataFrame, block_timestamp_type: str, context
 					out_of_range_mask.sum(),
 				)
 				df.loc[out_of_range_mask, "block_timestamp"] = pd.NA
+			if df["block_timestamp"].notna().sum() == 0:
+				logging.warning("%s no valid block_timestamp values remain; leaving as NaT", context)
+				df["block_timestamp"] = pd.NaT
+				return df
 			df["block_timestamp"] = pd.to_datetime(df["block_timestamp"], unit="s", errors="coerce")
 			invalid_count = df["block_timestamp"].isna().sum()
 			if invalid_count > 0:
 				logging.warning("%s found %d invalid block_timestamp values", context, invalid_count)
 	else:
 		if not pd.api.types.is_integer_dtype(df["block_timestamp"]):
-			df["block_timestamp"] = pd.to_numeric(df["block_timestamp"], errors="coerce")
+			df["block_timestamp"] = pd.to_numeric(df["block_timestamp"], errors="coerce").astype("float64")
+			non_finite_mask = ~np.isfinite(df["block_timestamp"])
+			if non_finite_mask.any():
+				logging.warning(
+					"%s found %d non-finite block_timestamp values; setting to NaN",
+					context,
+					non_finite_mask.sum(),
+				)
+				df.loc[non_finite_mask, "block_timestamp"] = pd.NA
 			sample_val = df["block_timestamp"].dropna()
 			if len(sample_val) > 0:
 				median_val = sample_val.median()
@@ -137,7 +158,11 @@ def convert_block_timestamp(df: pd.DataFrame, block_timestamp_type: str, context
 					out_of_range_mask.sum(),
 				)
 				df.loc[out_of_range_mask, "block_timestamp"] = pd.NA
-			df["block_timestamp"] = df["block_timestamp"].astype("Int64")
+			if df["block_timestamp"].notna().sum() == 0:
+				logging.warning("%s no valid block_timestamp values remain; leaving as NULL", context)
+				df["block_timestamp"] = pd.NA
+				return df
+			df["block_timestamp"] = df["block_timestamp"].round().astype("Int64")
 	return df
 
 
