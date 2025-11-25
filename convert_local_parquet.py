@@ -12,6 +12,7 @@ from typing import List, Optional
 
 import numpy as np
 import pandas as pd
+from pandas.api import types as pd_types
 import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
@@ -118,66 +119,88 @@ def normalize_unix_seconds(series: pd.Series, context: str) -> pd.Series:
 	return series
 
 
+def _coerce_numeric_seconds(series: pd.Series, context: str) -> Optional[pd.Series]:
+	numeric = pd.to_numeric(series, errors="coerce")
+	if numeric.isna().all():
+		return None
+	numeric = pd.Series(numeric, index=series.index, dtype="float64")
+	inf_mask = np.isinf(numeric.to_numpy())
+	if inf_mask.any():
+		logging.warning("%s found %d infinite block_timestamp values; setting to NaN", context, inf_mask.sum())
+		numeric.iloc[inf_mask] = np.nan
+	numeric = normalize_unix_seconds(numeric, context)
+	out_of_range_mask = numeric.notna() & ~numeric.between(MIN_UNIX_SECONDS, MAX_UNIX_SECONDS)
+	if out_of_range_mask.any():
+		logging.warning(
+			"%s found %d block_timestamp values outside supported range; setting to NaN",
+			context,
+			out_of_range_mask.sum(),
+		)
+		numeric.loc[out_of_range_mask] = np.nan
+	if numeric.notna().sum() == 0:
+		return None
+	return numeric
+
+
+def _coerce_datetime_direct(series: pd.Series, context: str) -> Optional[pd.Series]:
+	dt = pd.to_datetime(series, errors="coerce", utc=True)
+	if pd_types.is_datetime64tz_dtype(dt.dtype):
+		dt = dt.dt.tz_convert(None)
+	if dt.isna().all():
+		return None
+	return dt
+
+
 def convert_block_timestamp(df: pd.DataFrame, block_timestamp_type: str, context: str) -> pd.DataFrame:
 	if "block_timestamp" not in df.columns:
 		return df
-	if block_timestamp_type == "datetime":
-		if not pd.api.types.is_datetime64_any_dtype(df["block_timestamp"]):
-			df["block_timestamp"] = pd.to_numeric(df["block_timestamp"], errors="coerce").astype("float64")
-			non_finite_mask = ~np.isfinite(df["block_timestamp"])
-			if non_finite_mask.any():
-				logging.warning(
-					"%s found %d non-finite block_timestamp values; setting to NaN",
-					context,
-					non_finite_mask.sum(),
-				)
-				df.loc[non_finite_mask, "block_timestamp"] = pd.NA
-			df["block_timestamp"] = normalize_unix_seconds(df["block_timestamp"], context)
-			out_of_range_mask = df["block_timestamp"].notna() & ~df["block_timestamp"].between(MIN_UNIX_SECONDS, MAX_UNIX_SECONDS)
-			if out_of_range_mask.any():
-				logging.warning(
-					"%s found %d block_timestamp values outside pandas datetime range; setting to NaN",
-					context,
-					out_of_range_mask.sum(),
-				)
-				df.loc[out_of_range_mask, "block_timestamp"] = pd.NA
-			if df["block_timestamp"].notna().sum() == 0:
-				logging.warning("%s no valid block_timestamp values remain; dropping entire batch", context)
-				return df.iloc[0:0]
-			df["block_timestamp"] = pd.to_datetime(df["block_timestamp"], unit="s", errors="coerce")
-			invalid_mask = df["block_timestamp"].isna()
-			if invalid_mask.any():
-				logging.warning("%s dropping %d rows with invalid block_timestamp after conversion", context, invalid_mask.sum())
-				df = df[~invalid_mask].copy()
+	original_series = df["block_timestamp"]
+	numeric_seconds = _coerce_numeric_seconds(original_series, context)
+	fallback_used = False
+
+	if numeric_seconds is not None:
+		if block_timestamp_type == "datetime":
+			with np.errstate(all="ignore"):
+				converted = pd.to_datetime(numeric_seconds, unit="s", errors="coerce")
+		else:
+			converted = numeric_seconds
 	else:
-		if not pd.api.types.is_integer_dtype(df["block_timestamp"]):
-			df["block_timestamp"] = pd.to_numeric(df["block_timestamp"], errors="coerce").astype("float64")
-			non_finite_mask = ~np.isfinite(df["block_timestamp"])
-			if non_finite_mask.any():
-				logging.warning(
-					"%s found %d non-finite block_timestamp values; setting to NaN",
-					context,
-					non_finite_mask.sum(),
-				)
-				df.loc[non_finite_mask, "block_timestamp"] = pd.NA
-			df["block_timestamp"] = normalize_unix_seconds(df["block_timestamp"], context)
-			out_of_range_mask = df["block_timestamp"].notna() & ~df["block_timestamp"].between(MIN_UNIX_SECONDS, MAX_UNIX_SECONDS)
-			if out_of_range_mask.any():
-				logging.warning(
-					"%s found %d block_timestamp values outside supported bigint range; setting to NaN",
-					context,
-					out_of_range_mask.sum(),
-				)
-				df.loc[out_of_range_mask, "block_timestamp"] = pd.NA
-			if df["block_timestamp"].notna().sum() == 0:
-				logging.warning("%s no valid block_timestamp values remain; dropping entire batch", context)
-				return df.iloc[0:0]
-			df["block_timestamp"] = df["block_timestamp"].round()
-			invalid_mask = df["block_timestamp"].isna()
-			if invalid_mask.any():
-				logging.warning("%s dropping %d rows with invalid block_timestamp before integer cast", context, invalid_mask.sum())
-				df = df[~invalid_mask].copy()
-			df["block_timestamp"] = df["block_timestamp"].astype("Int64")
+		converted = None
+
+	if converted is None or converted.notna().sum() == 0:
+		fallback_used = True
+		direct_dt = _coerce_datetime_direct(original_series, context)
+		if direct_dt is None:
+			logging.warning("%s block_timestamp conversion failed (no numeric or datetime values); dropping batch", context)
+			return df.iloc[0:0]
+		if block_timestamp_type == "datetime":
+			converted = direct_dt
+		else:
+			seconds = (direct_dt.view("int64") // 1_000_000_000).astype("float64")
+			seconds[pd.isna(direct_dt)] = np.nan
+			converted = pd.Series(seconds, index=direct_dt.index, dtype="float64")
+
+	valid_mask = converted.notna()
+	if not valid_mask.any():
+		logging.warning("%s no valid block_timestamp values remain after %s conversion; dropping batch", context, "fallback" if fallback_used else "numeric")
+		return df.iloc[0:0]
+
+	dropped = (~valid_mask).sum()
+	if dropped > 0:
+		logging.warning(
+			"%s dropping %d rows with invalid block_timestamp (%s path)",
+			context,
+			dropped,
+			"fallback" if fallback_used else "numeric",
+		)
+
+	df = df.loc[valid_mask].copy()
+	if block_timestamp_type == "datetime":
+		if pd_types.is_datetime64tz_dtype(converted.dtype):
+			converted = converted.dt.tz_convert(None)
+		df["block_timestamp"] = converted.loc[valid_mask]
+	else:
+		df["block_timestamp"] = converted.loc[valid_mask].round().astype("Int64")
 	return df
 
 
