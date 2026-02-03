@@ -53,19 +53,22 @@ def generate_date_conditions(start_date: str, days: int) -> str:
 
 
 def fetch_count(engine: Engine, table_name: str, start_date: str = DEFAULT_START_DATE, days: int = DEFAULT_DAYS) -> tuple[int, float]:
-	"""Fetch both normal count and FTS-based count for comparison."""
-	start = time.perf_counter()
+	"""Fetch both normal count and FTS-based count for comparison, with separate latencies."""
 	date_conditions = generate_date_conditions(start_date, days)
 
 	normal_stmt = text(f"SELECT COUNT(*) FROM test.{table_name} WHERE {date_conditions}")
 	fts_stmt = text(f"SELECT COUNT(*) FROM test.{table_name} WHERE fts_match_word(:term, date)")
 
 	with engine.connect() as conn:
+		start_normal = time.perf_counter()
 		normal_val = conn.execute(normal_stmt).scalar()
-		fts_val = conn.execute(fts_stmt, {"term": FTS_MATCH_TERM}).scalar()
+		elapsed_normal_ms = (time.perf_counter() - start_normal) * 1000.0
 
-	elapsed_ms = (time.perf_counter() - start) * 1000.0
-	return int(normal_val or 0), int(fts_val or 0), elapsed_ms
+		start_fts = time.perf_counter()
+		fts_val = conn.execute(fts_stmt, {"term": FTS_MATCH_TERM}).scalar()
+		elapsed_fts_ms = (time.perf_counter() - start_fts) * 1000.0
+
+	return int(normal_val or 0), elapsed_normal_ms, int(fts_val or 0), elapsed_fts_ms
 
 
 def main() -> None:
@@ -82,14 +85,11 @@ def main() -> None:
 				logging.warning("No matching tables found in schema 'test'")
 			else:
 				try:
-					normal_cnt, fts_cnt, elapsed_ms = fetch_count(engine, latest, start_date, days)
+					normal_cnt, normal_ms, fts_cnt, fts_ms = fetch_count(engine, latest, start_date, days)
 					diff = normal_cnt - fts_cnt
-					print(
-						f"{time.strftime('%Y-%m-%d %H:%M:%S')} "
-						f"table={latest} normal_count={normal_cnt} fts_count={fts_cnt} "
-						f"diff={diff} duration_ms={elapsed_ms:.1f}",
-						flush=True,
-					)
+					ts = time.strftime('%Y-%m-%d %H:%M:%S')
+					print(f"{ts} table={latest} normal_count={normal_cnt} fts_count={fts_cnt} diff={diff}")
+					print(f"{ts} table={latest} normal_latency_ms={normal_ms:.1f} fts_latency_ms={fts_ms:.1f}", flush=True)
 				except Exception as e:
 					logging.error("Query failed on table %s: %s", latest, str(e))
 			time.sleep(10)
