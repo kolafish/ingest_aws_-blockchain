@@ -15,6 +15,9 @@ from eth_import_transactions import get_engine
 DEFAULT_START_DATE = "2025-10-25"
 DEFAULT_DAYS = 32
 
+# FTS match term for comparison
+FTS_MATCH_TERM = "2025"
+
 
 def configure_logging() -> None:
 	logging.basicConfig(
@@ -50,14 +53,19 @@ def generate_date_conditions(start_date: str, days: int) -> str:
 
 
 def fetch_count(engine: Engine, table_name: str, start_date: str = DEFAULT_START_DATE, days: int = DEFAULT_DAYS) -> tuple[int, float]:
+	"""Fetch both normal count and FTS-based count for comparison."""
 	start = time.perf_counter()
 	date_conditions = generate_date_conditions(start_date, days)
-	#stmt = text(f"SELECT COUNT(*) FROM test.{table_name} WHERE fts_match_word(\"2025\", date)")
-	stmt = text(f"SELECT COUNT(*) FROM test.{table_name} WHERE {date_conditions}")
+
+	normal_stmt = text(f"SELECT COUNT(*) FROM test.{table_name} WHERE {date_conditions}")
+	fts_stmt = text(f"SELECT COUNT(*) FROM test.{table_name} WHERE fts_match_word(:term, date)")
+
 	with engine.connect() as conn:
-		val = conn.execute(stmt).scalar()
+		normal_val = conn.execute(normal_stmt).scalar()
+		fts_val = conn.execute(fts_stmt, {"term": FTS_MATCH_TERM}).scalar()
+
 	elapsed_ms = (time.perf_counter() - start) * 1000.0
-	return int(val or 0), elapsed_ms
+	return int(normal_val or 0), int(fts_val or 0), elapsed_ms
 
 
 def main() -> None:
@@ -74,8 +82,14 @@ def main() -> None:
 				logging.warning("No matching tables found in schema 'test'")
 			else:
 				try:
-					cnt, elapsed_ms = fetch_count(engine, latest, start_date, days)
-					print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} table={latest} count={cnt} duration_ms={elapsed_ms:.1f}", flush=True)
+					normal_cnt, fts_cnt, elapsed_ms = fetch_count(engine, latest, start_date, days)
+					diff = normal_cnt - fts_cnt
+					print(
+						f"{time.strftime('%Y-%m-%d %H:%M:%S')} "
+						f"table={latest} normal_count={normal_cnt} fts_count={fts_cnt} "
+						f"diff={diff} duration_ms={elapsed_ms:.1f}",
+						flush=True,
+					)
 				except Exception as e:
 					logging.error("Query failed on table %s: %s", latest, str(e))
 			time.sleep(10)
