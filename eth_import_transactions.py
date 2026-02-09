@@ -192,7 +192,7 @@ def validate_and_clean_data(df: pd.DataFrame) -> pd.DataFrame:
 		long_count = long_inputs.sum() if long_inputs.any() else 0
 		df["input"] = df["input"].str.slice(0, max_input_length)
 		if long_count > 0:
-			logging.warning("Input truncation: %d row(s) truncated to %d chars", long_count, max_input_length)
+			logging.debug("Input truncation: %d row(s) truncated to %d chars", long_count, max_input_length)
 	
 	return df
 
@@ -410,7 +410,7 @@ def bulk_insert_chunk(conn, chunk: pd.DataFrame, table_name: str) -> None:
 		cursor.close()
 
 
-def import_one_day(date_str: str, engine: Engine, table_name: str, chunksize: int = 10000, batch_size: int = 10000, use_bulk_insert: bool = True, verbose: bool = False, download_local: bool = True, download_timeout: int = 300, download_retries: int = 3, block_timestamp_type: str = "datetime") -> int:
+def import_one_day(date_str: str, engine: Engine, table_name: str, chunksize: int = 10000, batch_size: int = 10000, use_bulk_insert: bool = True, verbose: bool = False, download_local: bool = True, download_timeout: int = 300, download_retries: int = 3, block_timestamp_type: str = "datetime", progress: Optional[dict] = None) -> int:
 	fs = pa_fs.S3FileSystem(region="us-east-2", anonymous=True)
 	files = _list_parquet_files(fs, date_str)
 	if not files:
@@ -577,6 +577,8 @@ def import_one_day(date_str: str, engine: Engine, table_name: str, chunksize: in
 					)
 				
 			total_rows += len(chunk)
+			if progress is not None:
+				progress["current_day_rows"] = total_rows
 
 	logging.info("Date %s done: %d rows", date_str, total_rows)
 	return total_rows
@@ -684,6 +686,7 @@ def main() -> None:
 					logging.warning("No local files found for date=%s in %s, skipping this date", d, local_dir)
 					continue
 				logging.info("Importing from local files for date=%s (files=%d)", d, len(local_files))
+				progress["current_day_rows"] = 0
 				dataset = ds.dataset(local_files, format="parquet")
 				available = set(dataset.schema.names)
 				selected_columns = [c for c in PREFERRED_COLUMNS if c in available]
