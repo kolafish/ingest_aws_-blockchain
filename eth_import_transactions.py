@@ -186,26 +186,13 @@ def validate_and_clean_data(df: pd.DataFrame) -> pd.DataFrame:
 		# Convert to string and handle NaN values
 		df["input"] = df["input"].astype("string")
 		
-		# Check for long input data and log warnings near TEXT limit (~65,535 chars)
-		long_inputs = df["input"].str.len() > 60000
-		if long_inputs.any():
-			long_count = long_inputs.sum()
-			logging.warning("Found %d transactions with input data longer than 1MB", long_count)
-			
-			# Log some examples of long inputs
-			long_examples = df[long_inputs]["input"].str.len().head(5)
-			for idx, length in long_examples.items():
-				logging.warning("Transaction at index %d has input length: %d characters", idx, length)
-		
 		# Truncate to MySQL TEXT max length (approx 65,535 chars)
 		max_input_length = 65535
+		long_inputs = df["input"].str.len() > max_input_length
+		long_count = long_inputs.sum() if long_inputs.any() else 0
 		df["input"] = df["input"].str.slice(0, max_input_length)
-		
-		# Log if any truncation occurred
-		truncated = df["input"].str.len() >= max_input_length
-		if truncated.any():
-			truncated_count = truncated.sum()
-			logging.warning("Truncated %d input fields to %d characters", truncated_count, max_input_length)
+		if long_count > 0:
+			logging.warning("Input truncation: %d row(s) truncated to %d chars", long_count, max_input_length)
 	
 	return df
 
@@ -423,41 +410,31 @@ def bulk_insert_chunk(conn, chunk: pd.DataFrame, table_name: str) -> None:
 		cursor.close()
 
 
-def import_one_day(date_str: str, engine: Engine, table_name: str, chunksize: int = 10000, batch_size: int = 10000, use_bulk_insert: bool = True, verbose: bool = False, download_local: bool = True, download_timeout: int = 300, download_retries: int = 3, block_timestamp_type: str = "datetime") -> None:
+def import_one_day(date_str: str, engine: Engine, table_name: str, chunksize: int = 10000, batch_size: int = 10000, use_bulk_insert: bool = True, verbose: bool = False, download_local: bool = True, download_timeout: int = 300, download_retries: int = 3, block_timestamp_type: str = "datetime") -> int:
 	fs = pa_fs.S3FileSystem(region="us-east-2", anonymous=True)
 	files = _list_parquet_files(fs, date_str)
 	if not files:
 		logging.error("No Parquet files found for date=%s", date_str)
 		sys.exit(2)
 
-	logging.info("Found %d parquet files for date=%s", len(files), date_str)
-	
 	# Download files to local if requested
 	if download_local:
 		local_files = download_files_to_local(fs, files, date_str, max_retries=download_retries, timeout_seconds=download_timeout)
-		# Use local files instead of S3 files
 		files = local_files
 		fs = None  # No filesystem needed for local files
-	
-	# Display file sizes
+
 	total_size = 0
-	for i, file_path in enumerate(files):
+	for file_path in files:
 		try:
 			if fs:
-				file_info = fs.get_file_info(file_path)
-				file_size_mb = file_info.size / (1024 * 1024)
-				total_size += file_info.size
+				total_size += fs.get_file_info(file_path).size
 			else:
-			# Local file
-				file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
 				total_size += os.path.getsize(file_path)
-			logging.info("File %d: %s (%.2f MB)", i+1, os.path.basename(file_path), file_size_mb)
-		except Exception as e:
-			logging.warning("Could not get size for file %s: %s", file_path, str(e))
-	
+		except Exception:
+			pass
 	total_size_gb = total_size / (1024 * 1024 * 1024)
-	logging.info("Total dataset size: %.2f GB", total_size_gb)
-	
+	logging.info("Date %s: %d files, %.2f GB", date_str, len(files), total_size_gb)
+
 	# Create dataset from files (local or S3)
 	if fs:
 		dataset = ds.dataset(files, filesystem=fs, format="parquet")
@@ -466,41 +443,16 @@ def import_one_day(date_str: str, engine: Engine, table_name: str, chunksize: in
 
 	available = set(dataset.schema.names)
 	selected_columns = [c for c in PREFERRED_COLUMNS if c in available]
-	missing = [c for c in PREFERRED_COLUMNS if c not in available]
-	not_selected = [c for c in available if c not in PREFERRED_COLUMNS]
-	logging.info("Schema columns available=%d, selected=%d, missing=%d", len(available), len(selected_columns), len(missing))
-	if missing:
-		logging.warning("Missing columns skipped: %s", ", ".join(missing))
-	if not_selected:
-		logging.info("Available columns not selected: %s", ", ".join(sorted(not_selected)))
-
-	logging.info("Creating scanner with batch_size=%d...", batch_size)
 	scanner = dataset.scanner(columns=selected_columns, batch_size=batch_size)
-	logging.info("Scanner created successfully, starting to process batches...")
 
 	total_rows = 0
 	batch_idx = 0
-	
-	logging.info("Starting batch processing...")
 	for batch in scanner.to_batches():
 		batch_idx += 1
-		batch_start_time = time.time()
-		logging.info("Processing record batch #%d with %d rows", batch_idx, batch.num_rows)
-		
-		# Calculate progress percentage
-		if total_size > 0:
-			# Estimate bytes processed based on rows processed
-			estimated_bytes_processed = (total_rows + batch.num_rows) * (total_size / dataset.count_rows())
-			progress_percent = (estimated_bytes_processed / total_size) * 100
-			logging.info("Estimated progress: %.1f%% (%.2f GB / %.2f GB)", 
-						progress_percent, estimated_bytes_processed / (1024**3), total_size_gb)
-		
-		logging.info("Converting batch to pandas DataFrame...")
 		df = batch.to_pandas(types_mapper=None)
-		logging.info("DataFrame created with shape: %s", df.shape)
 
-		# Print first record field information (only for the first batch)
-		if batch_idx == 1 and len(df) > 0:
+		# Print first record field information only when verbose
+		if verbose and batch_idx == 1 and len(df) > 0:
 			print("\n" + "="*100)
 			print("原始数据第一条记录字段信息 (First Record Field Information)")
 			print("="*100)
@@ -535,13 +487,8 @@ def import_one_day(date_str: str, engine: Engine, table_name: str, chunksize: in
 						value_str = value_str[:47] + "..."
 				print(f"{col:<20} {value_str:<50} {col_type:<20}")
 			print("="*100 + "\n")
-		
-		# Only normalize hex-like columns and set date string; keep numeric types as-is
-		logging.info("Normalizing hex columns...")
+
 		df = normalize_hex(df)
-		
-		# Validate and clean data to prevent insertion errors
-		logging.info("Validating and cleaning data...")
 		df = validate_and_clean_data(df)
 		
 		# Convert block_timestamp based on block_timestamp_type
@@ -591,30 +538,19 @@ def import_one_day(date_str: str, engine: Engine, table_name: str, chunksize: in
 					
 					# Convert to integer (Unix timestamp in seconds)
 					df["block_timestamp"] = df["block_timestamp"].astype('Int64')  # Nullable integer type
-		
-		logging.info("Setting date column to: %s", date_str)
+
 		df["date"] = str(date_str)
-		
-		# Generate random boolean values for random_flag column
-		logging.info("Generating random boolean values for random_flag column...")
 		df["random_flag"] = [random.choice([True, False]) for _ in range(len(df))]
 
 		if len(df) == 0:
-			logging.info("Batch #%d is empty after transforms; skipping", batch_idx)
 			continue
 
-		logging.info("Starting chunked insertion for batch #%d...")
 		for start in range(0, len(df), chunksize):
 			end = min(start + chunksize, len(df))
-			logging.info("Inserting rows %d..%d of batch #%d", start, end - 1, batch_idx)
-			
 			chunk = df.iloc[start:end].copy()
-			logging.info("Chunk prepared, executing insert...")
-			
+
 			# Use individual transaction for each chunk to ensure data is committed
 			with engine.begin() as conn:
-				start_time = time.time()
-				
 				if use_bulk_insert:
 					try:
 						bulk_insert_chunk(conn, chunk, table_name)
@@ -640,17 +576,10 @@ def import_one_day(date_str: str, engine: Engine, table_name: str, chunksize: in
 						chunksize=None,  # Disable pandas chunking since we're already chunking manually
 					)
 				
-				insert_time = time.time() - start_time
-			
 			total_rows += len(chunk)
-			logging.info("Chunk inserted and committed successfully. Rows in chunk: %d, Total rows: %d, Insert time: %.2fs", 
-						len(chunk), total_rows, insert_time)
-			
-		# Log batch performance statistics
-		batch_total_time = time.time() - batch_start_time
-		logging.info("Batch #%d completed in %.2fs (%.2f rows/sec)", batch_idx, batch_total_time, batch.num_rows / batch_total_time)
 
-	logging.info("Done. Total rows inserted: %d", total_rows)
+	logging.info("Date %s done: %d rows", date_str, total_rows)
+	return total_rows
 
 
 def parse_args() -> argparse.Namespace:
@@ -718,6 +647,9 @@ def main() -> None:
 	# Create new table or use existing one
 	table_name = ensure_schema(engine, create_new_table=args.create_new_table, index_type=args.index_type, block_timestamp_type=args.block_timestamp_type)
 
+	total_days = len(dates)
+	total_rows_global = 0
+
 	# If source is download, download all days concurrently into one directory
 	if source == "download":
 		fs = pa_fs.S3FileSystem(region="us-east-2", anonymous=True)
@@ -739,6 +671,7 @@ def main() -> None:
 		logging.info("All download tasks completed")
 
 	# Sequentially import per day, reading local if available
+	days_done = 0
 	for d in dates:
 		try:
 			if source in ("download", "local"):
@@ -750,30 +683,18 @@ def main() -> None:
 				if not local_files:
 					logging.warning("No local files found for date=%s in %s, skipping this date", d, local_dir)
 					continue
-				# Temporarily adapt import_one_day: call with fake fs path list by using local-only branch
-				# We reuse import_one_day by bypassing S3 discovery: set download_local=False and fake S3 listing via monkey list
-				# Easiest: create dataset directly here and reuse inner logic? For simplicity, call import_one_day but with download_local=False after swapping _list_parquet_files? Instead, run a small local import loop here:
 				logging.info("Importing from local files for date=%s (files=%d)", d, len(local_files))
-				# Create dataset
 				dataset = ds.dataset(local_files, format="parquet")
 				available = set(dataset.schema.names)
 				selected_columns = [c for c in PREFERRED_COLUMNS if c in available]
-				missing = [c for c in PREFERRED_COLUMNS if c not in available]
-				not_selected = [c for c in available if c not in PREFERRED_COLUMNS]
-				logging.info("Schema columns available=%d, selected=%d, missing=%d", len(available), len(selected_columns), len(missing))
-				if missing:
-					logging.warning("Missing columns skipped: %s", ", ".join(missing))
-				if not_selected:
-					logging.info("Available columns not selected: %s", ", ".join(sorted(not_selected)))
 				scanner = dataset.scanner(columns=selected_columns, batch_size=batch_size)
-				batch_idx = 0
 				total_rows = 0
+				batch_idx = 0
 				for batch in scanner.to_batches():
 					batch_idx += 1
 					df = batch.to_pandas(types_mapper=None)
 
-					# Print first record field information (only for the first batch of the first date)
-					if batch_idx == 1 and len(df) > 0 and d == dates[0]:
+					if args.verbose and batch_idx == 1 and len(df) > 0 and d == dates[0]:
 						print("\n" + "="*100)
 						print("原始数据第一条记录字段信息 (First Record Field Information)")
 						print("="*100)
@@ -871,10 +792,15 @@ def main() -> None:
 								bulk_insert_chunk(conn, chunk, table_name)
 							except Exception:
 								chunk.to_sql(table_name, con=conn, schema="eth", if_exists="append", index=False, method="multi", chunksize=None)
-						total_rows += len(df)
-				logging.info("Date %s import complete, total rows: %d", d, total_rows)
+						total_rows += len(chunk)
+				days_done += 1
+				total_rows_global += total_rows
+				logging.info("Progress: %d/%d days, %d rows", days_done, total_days, total_rows_global)
 			elif source == "s3":
-				import_one_day(d, engine, table_name, chunksize=chunksize, batch_size=batch_size, use_bulk_insert=not args.no_bulk_insert, verbose=args.verbose, download_local=False, download_timeout=download_timeout, download_retries=download_retries, block_timestamp_type=args.block_timestamp_type)
+				rows = import_one_day(d, engine, table_name, chunksize=chunksize, batch_size=batch_size, use_bulk_insert=not args.no_bulk_insert, verbose=args.verbose, download_local=False, download_timeout=download_timeout, download_retries=download_retries, block_timestamp_type=args.block_timestamp_type)
+				days_done += 1
+				total_rows_global += rows
+				logging.info("Progress: %d/%d days, %d rows", days_done, total_days, total_rows_global)
 		except Exception as e:
 			logging.error("Error processing date=%s: %s, skipping this date and continuing with next date", d, str(e), exc_info=args.verbose)
 			continue
