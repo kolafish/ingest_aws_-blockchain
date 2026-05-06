@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS test.eth_transactions (
   transaction_type BIGINT NULL,
   receipt_effective_gas_price BIGINT NULL,
   random_flag BOOLEAN NOT NULL,
-  PRIMARY KEY (hash) NONCLUSTERED
+  PRIMARY KEY (hash) CLUSTERED
 );
 
 CREATE HYBRID INDEX idx_eth_transactions_hybrid
