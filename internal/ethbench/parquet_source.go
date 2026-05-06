@@ -8,8 +8,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/parquet-go/parquet-go"
+	"github.com/parquet-go/parquet-go/deprecated"
 )
 
 func StreamManifest(ctx context.Context, manifest *Manifest, readerWorkers int, bufferSize int) (<-chan EthTransaction, <-chan error) {
@@ -162,12 +164,8 @@ func rowToEthTransaction(row parquet.Row, columns []string, date string) EthTran
 		case "receipt_status":
 			record.ReceiptStatus = intPtrValue(value)
 		case "block_timestamp":
-			if timestamp := intPtrValue(value); timestamp != nil {
-				record.BlockTimestamp = normalizeUnixSeconds(*timestamp)
-			} else if text := valueToString(value); text != "" {
-				if parsed, err := strconv.ParseInt(text, 10, 64); err == nil {
-					record.BlockTimestamp = normalizeUnixSeconds(parsed)
-				}
+			if timestamp, ok := timestampSecondsValue(value); ok {
+				record.BlockTimestamp = timestamp
 			}
 		case "block_number":
 			record.BlockNumber = intPtrValue(value)
@@ -217,6 +215,47 @@ func intPtrValue(value parquet.Value) *int64 {
 		return nil
 	}
 	return &out
+}
+
+func timestampSecondsValue(value parquet.Value) (int64, bool) {
+	switch value.Kind() {
+	case parquet.Int96:
+		seconds := int96UnixSeconds(value.Int96())
+		return seconds, seconds > 0
+	case parquet.Int64, parquet.Int32, parquet.Double, parquet.Float:
+		if timestamp := intPtrValue(value); timestamp != nil {
+			return normalizeUnixSeconds(*timestamp), true
+		}
+	case parquet.ByteArray, parquet.FixedLenByteArray:
+		text := strings.TrimSpace(valueToString(value))
+		if text == "" {
+			return 0, false
+		}
+		if parsed, err := strconv.ParseInt(text, 10, 64); err == nil {
+			return normalizeUnixSeconds(parsed), true
+		}
+		for _, layout := range timestampLayouts {
+			if parsed, err := time.Parse(layout, text); err == nil {
+				return parsed.Unix(), true
+			}
+		}
+	}
+	return 0, false
+}
+
+var timestampLayouts = []string{
+	time.RFC3339Nano,
+	"2006-01-02 15:04:05.999999999",
+	"2006-01-02 15:04:05.999999",
+	"2006-01-02 15:04:05.999",
+	"2006-01-02 15:04:05",
+}
+
+func int96UnixSeconds(value deprecated.Int96) int64 {
+	const julianUnixEpochDays = 2_440_588
+	nanosOfDay := (int64(value[1]) << 32) | int64(value[0])
+	daysSinceUnixEpoch := int64(value[2]) - julianUnixEpochDays
+	return daysSinceUnixEpoch*86_400 + nanosOfDay/int64(time.Second)
 }
 
 func floatPtrValue(value parquet.Value) *float64 {

@@ -4,8 +4,10 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/parquet-go/parquet-go"
+	"github.com/parquet-go/parquet-go/deprecated"
 )
 
 type parquetTestTx struct {
@@ -79,6 +81,31 @@ func TestStreamParquetFile(t *testing.T) {
 	}
 	if !record.Valid() {
 		t.Fatalf("record should be valid: %#v", record)
+	}
+}
+
+func TestInt96UnixSeconds(t *testing.T) {
+	ts := time.Date(2025, 10, 1, 12, 34, 56, 789_000_000, time.UTC)
+	if got := int96UnixSeconds(timeToInt96(ts)); got != ts.Unix() {
+		t.Fatalf("int96UnixSeconds() = %d, want %d", got, ts.Unix())
+	}
+}
+
+func timeToInt96(ts time.Time) deprecated.Int96 {
+	const julianUnixEpochDays = 2_440_588
+	utc := ts.UTC()
+	seconds := utc.Unix()
+	days := seconds / 86_400
+	secondsOfDay := seconds % 86_400
+	if secondsOfDay < 0 {
+		days--
+		secondsOfDay += 86_400
+	}
+	nanosOfDay := secondsOfDay*int64(time.Second) + int64(utc.Nanosecond())
+	return deprecated.Int96{
+		uint32(nanosOfDay),
+		uint32(nanosOfDay >> 32),
+		uint32(days + julianUnixEpochDays),
 	}
 }
 
