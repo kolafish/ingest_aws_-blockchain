@@ -22,7 +22,7 @@ func main() {
 		table         = flag.String("table", "test.eth_transactions", "Fully qualified destination table.")
 		readerWorkers = flag.Int("reader-workers", 2, "Concurrent parquet file readers.")
 		workers       = flag.Int("workers", 8, "Concurrent DB insert workers.")
-		batchRows     = flag.Int("batch-rows", 5000, "Rows per INSERT statement.")
+		batchRows     = flag.Int("batch-rows", 2000, "Rows per INSERT statement.")
 		retries       = flag.Int("retries", 3, "Retries per failed batch.")
 		resultPath    = flag.String("result-jsonl", "", "Optional JSONL result path.")
 		runID         = flag.String("run-id", time.Now().UTC().Format("20060102T150405Z"), "Run identifier.")

@@ -139,9 +139,12 @@ go run ./cmd/tidb-writer \
   --manifest bench/manifests/eth_transactions_10gb.json \
   --workers 8 \
   --reader-workers 4 \
-  --batch-rows 5000 \
+  --batch-rows 2000 \
   --result-jsonl results/smoke_tidb_insert.jsonl
 ```
+
+The TiDB batch size must stay below the MySQL/TiDB placeholder limit. With the
+current 22 insert columns, 2000 rows produces 44,000 placeholders.
 
 After the last insert batch, measure TiCI catch-up separately:
 
