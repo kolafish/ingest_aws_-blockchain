@@ -187,3 +187,6 @@ go run ./cmd/es-writer --manifest bench/manifests/eth_transactions_10gb.json
 
 Detailed workflow: `docs/write_smoke_plan.md`.
 
+Recorded smoke results:
+
+- `docs/write_smoke_results_2026-05-06.md`
