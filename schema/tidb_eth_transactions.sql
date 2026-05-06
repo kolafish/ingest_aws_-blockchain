@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS test.eth_transactions (
   value DOUBLE NULL,
   gas BIGINT NULL,
   gas_price BIGINT NOT NULL DEFAULT 0,
-  input TEXT NULL,
+  input LONGTEXT NULL,
   receipt_cumulative_gas_used BIGINT NULL,
   receipt_gas_used BIGINT NULL,
   receipt_contract_address VARCHAR(42) NULL,
