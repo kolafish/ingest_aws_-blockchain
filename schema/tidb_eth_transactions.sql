@@ -63,5 +63,8 @@ PARAMETER '{
   "sort": {
     "columns": ["block_timestamp", "gas_price"],
     "order": ["desc", "desc"]
+  },
+  "sharding_key": {
+    "columns": ["hash"]
   }
 }';
