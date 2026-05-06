@@ -11,6 +11,11 @@ Import public AWS Ethereum transactions parquet into TiDB/MySQL-compatible DB.
 - Multi-day import: from a start date counting backward N days
 - Robust insert: bulk multi-row INSERT with fallback to `to_sql`
 - Schema: primary key `(date, hash, block_timestamp)` and `input` as `LONGTEXT`
+- Go smoke tools for low-cost TiCI vs Elasticsearch write-path validation:
+  - local parquet manifest generation
+  - client dry-run throughput check
+  - TiDB/TiCI multi-row INSERT writer
+  - Elasticsearch Bulk API writer
 
 ## Requirements
 
@@ -159,5 +164,26 @@ CREATE TABLE IF NOT EXISTS eth.eth_transactions (
 - Bulk insert is faster; on error it falls back to `to_sql` automatically.
 - For TiDB, prefer `mysql+mysqlconnector` URI used in the script; ensure port (`4000`) is reachable.
 
+## 10GB Write Smoke
 
+The TiCI vs Elasticsearch comparison starts with a strict 10GB write smoke.
+Do not start large clusters before this smoke passes.
+
+Aligned schemas:
+
+```text
+schema/tidb_eth_transactions.sql
+schema/es_eth_transactions_mapping.json
+```
+
+Go tools:
+
+```bash
+go run ./cmd/manifest-builder --input-dir local_data_multi --target-size 10GB
+go run ./cmd/client-dry-run --manifest bench/manifests/eth_transactions_10gb.json
+go run ./cmd/tidb-writer --manifest bench/manifests/eth_transactions_10gb.json
+go run ./cmd/es-writer --manifest bench/manifests/eth_transactions_10gb.json
+```
+
+Detailed workflow: `docs/write_smoke_plan.md`.
 
