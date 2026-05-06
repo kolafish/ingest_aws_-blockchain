@@ -1,8 +1,8 @@
 # 10GB Write Smoke Results - 2026-05-06
 
-This document records the first TiCI write-path smoke results for the
-Ethereum transactions 10GB manifest. It is a smoke and tuning log, not a final
-1TB benchmark result.
+This document records the first TiCI and Elasticsearch write-path smoke
+results for the Ethereum transactions 10GB manifest. It is a smoke and tuning
+log, not a final 1TB benchmark result.
 
 ## Dataset
 
@@ -59,6 +59,45 @@ block_timestamp desc, gas_price desc
 Elasticsearch target mapping:
 schema/es_eth_transactions_mapping.json
 ```
+
+## Elasticsearch Testbed
+
+Elasticsearch was tested after the TiCI cluster was stopped, to avoid running
+both systems at the same time during the cost-gated smoke phase.
+
+Deployment:
+
+```text
+node: center
+observed CPU/RAM: 4 vCPU, 7.5 GiB RAM
+Elasticsearch: 9.3.4 tarball, bundled JDK
+Lucene: 10.3.2
+cluster.name: eth-es-smoke
+node.name: es-1
+network.host: 127.0.0.1
+http.port: 9200
+security: disabled
+heap: -Xms4g -Xmx4g
+path.data: /home/ubuntu/elasticsearch-smoke/data
+path.logs: /home/ubuntu/elasticsearch-smoke/logs
+vm.max_map_count: 262144
+```
+
+Index settings:
+
+```text
+index: eth_transactions
+number_of_shards: 1
+number_of_replicas: 0
+refresh_interval: -1
+index sort: block_timestamp desc, gas_price desc
+dynamic mapping: strict
+```
+
+The mapping intentionally avoids analyzed text fields and tokenizers. It uses
+`keyword`, `long`, `double`, and `boolean` fields, and disables `index` and/or
+`doc_values` for fields that are not part of the TiCI-aligned write smoke
+indexing surface.
 
 ## TiCI Insert Results
 
@@ -122,6 +161,44 @@ TiKV then exited and systemd restarted `tikv-20160` at
 latency had spikes up to about 2.2s, and TiKV logs showed prewrite scheduler
 flow-control delays around 1.1s to 1.55s.
 
+## Elasticsearch Write Results
+
+The official Elasticsearch result uses the same 10GB manifest and a clean ES
+data path. The earlier `workers=4` run is retained only as a pressure sample.
+
+| Run | Writer Settings | Rows | Elapsed | Rows/s | Errors | Result |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `es_sanity_20260506T125740Z` | `workers=1`, `reader_workers=2`, `batch_rows=1000` | 1,704,159 | 145.85s | 11,684.1 | 0 | sanity only |
+| `20260506T130117_es_w4_b5000` | `workers=4`, `reader_workers=4`, `batch_rows=5000` | about 9,865,000 | stopped at 1,973 batches | partial | 0 before stop | invalid, segment writer backpressure |
+| `20260506T132912_es_w1_b5000` | `workers=1`, `reader_workers=2`, `batch_rows=5000` | 27,045,923 | 3,834.50s | 7,053.3 | 0 | clean |
+
+Clean `workers=1` validation after refresh:
+
+```text
+_count: 27,045,923
+store.size: 16,585,412,386 bytes
+docs.deleted: 4,168
+index_total: 27,060,923
+write thread-pool rejected: 0
+```
+
+`index_total` includes indexing attempts, so it is higher than `_count` by
+15,000 documents because the writer performed three successful retry attempts
+of 5,000-row bulk requests. The final row count still matched the manifest.
+
+Clean `workers=1` bulk latency:
+
+```text
+bulk requests: 5,415
+avg batch latency: 669.027 ms
+p50 batch latency: 261.583 ms
+p95 batch latency: 496.313 ms
+p99 batch latency: 1,397.037 ms
+max batch latency: 121,296.036 ms
+retry attempts: 3
+max retry count on one bulk request: 1
+```
+
 ## Bottleneck Interpretation
 
 The write path did not scale linearly with client worker count:
@@ -146,6 +223,33 @@ Interpretation:
    earlier c5.xlarge worker failed because earlyoom killed `tici-server` when
    its RSS reached about 7GB.
 
+For Elasticsearch, `workers=4` was too aggressive for the first clean smoke on
+the single small node. Even `workers=1` eventually hit Lucene segment write
+backpressure:
+
+```text
+IndexingMemoryController events: 21 throttle cycles
+representative log: segment writing can't keep up
+indexing.throttle_time: 1,109,564 ms
+merge.total_time: 1,139,302 ms
+merge.total_throttled_time: 595,445 ms
+flush.total_time: 3,324,179 ms
+write queue: 0
+write rejected: 0
+```
+
+Interpretation: the clean ES `workers=1` run was not blocked by the Go client
+or write-thread rejection. The dominant limiter was single-node Lucene segment
+flush/merge/indexing backpressure on the center node's storage and memory
+budget. This means higher client concurrency should be tested only after this
+baseline, with a clean index reset and close tracking of throttle time, merge
+time, disk usage, and bulk latency spikes.
+
+The TiCI and Elasticsearch 10GB clean results are therefore not a symmetric
+cluster-size comparison yet. TiCI used a multi-node topology with TiKV, TiDB,
+TiCDC, TiFlash, TiCI meta, and a TiCI worker. Elasticsearch used a single
+self-managed node to keep the smoke cost minimal.
+
 ## Storage Artifacts
 
 S3 artifacts retained after these runs:
@@ -160,12 +264,16 @@ S3 artifacts retained after these runs:
 
 ## Next Steps
 
-1. Run Elasticsearch 10GB write smoke on a single self-managed node, using
-   `schema/es_eth_transactions_mapping.json`.
-2. Keep Elasticsearch and TiCI clusters separate to preserve the cost gate.
-3. Do not rerun `workers=4` on the current TiKV volume. Increase TiKV disk to
+1. Keep Elasticsearch and TiCI clusters separate to preserve the cost gate.
+2. Do not rerun Elasticsearch `workers=4` on the current single small node as a
+   clean benchmark. Run `workers=2` first if a second ES point is needed.
+3. Do not rerun TiCI `workers=4` on the current TiKV volume. Increase TiKV disk to
    at least 300GB, or clean TiKV/S3 artifacts between runs before collecting
    another 4-worker result.
-4. Avoid `COUNT(*)` during timed writes. The w4 investigation confirmed that
+4. Avoid `COUNT(*)` during timed writes. The TiCI w4 investigation confirmed that
    count scans from the previous table can add slow TiKV scan work and pollute
    the write environment.
+5. For a fairer ES-vs-TiCI write comparison, choose the next ES topology before
+   scaling data: either keep a minimal single-node cost baseline, or deploy a
+   small multi-node ES cluster with explicit data-node sizing and EBS volume
+   throughput.
