@@ -177,6 +177,53 @@ w2 shard distribution after completion:
 | 1 | es-1 | 9,163,454 | 7,140,111,961 | es-2 | 5,805,110,197 |
 | 2 | es-3 | 9,164,817 | 5,750,396,783 | es-1 | 6,779,624,899 |
 
+## Optimization Reruns
+
+Two follow-up ES write tests were run after the 3-node baseline:
+
+```text
+EBS6000:
+  topology: 3 ES data/master/ingest nodes + 1 driver
+  instance type: c5.xlarge
+  storage: 100GB gp3 each, 6000 IOPS, 250 MiB/s
+  index: 3 primary shards, 1 replica
+
+6-node:
+  topology: 6 ES data/master/ingest nodes + 1 driver
+  instance type: c5.xlarge
+  storage: 100GB gp3 each, 3000 IOPS, 125 MiB/s
+  index: schema/es_eth_transactions_10gb_replicated_6shards_mapping.json
+         6 primary shards, 1 replica
+```
+
+All four optimization runs used the same 10GB manifest and the same indexed
+field surface as the 3-node baseline.
+
+| Topology | Run | Workers | Rows | Elapsed | Rows/s | Errors | Retries | `_count` | Store | Primary store |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| EBS6000 | `20260507T064258Z_es_ebs6000_w1_b5000` | 1 | 27,489,769 | 1,657.12s | 16,588.9 | 0 | 1 | 27,489,769 | 34,726,546,709 | 17,359,372,888 |
+| EBS6000 | `20260507T071159Z_es_ebs6000_w2_b5000` | 2 | 27,489,769 | 1,650.95s | 16,650.9 | 0 | 3 | 27,489,769 | 35,937,181,742 | 17,828,000,708 |
+| 6-node | `20260507T075452Z_es_6node_gp3base_w1_b5000` | 1 | 27,489,769 | 1,346.57s | 20,414.7 | 0 | 0 | 27,489,769 | 40,348,004,963 | 19,733,296,829 |
+| 6-node | `20260507T081808Z_es_6node_gp3base_w2_b5000` | 2 | 27,489,769 | 988.39s | 27,812.6 | 0 | 0 | 27,489,769 | 39,382,490,643 | 20,830,128,455 |
+
+Optimization bulk latency:
+
+| Topology | Workers | Bulk requests | Avg | P50 | P95 | P99 | Max | >5s batches | >60s batches |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| EBS6000 | 1 | 5,502 | 260.651 ms | 216.946 ms | 315.377 ms | 396.900 ms | 157,347.539 ms | 1 | 1 |
+| EBS6000 | 2 | 5,504 | 553.669 ms | 239.682 ms | 356.547 ms | 3,094.752 ms | 252,407.016 ms | 47 | 8 |
+| 6-node | 1 | 5,504 | 205.249 ms | 184.110 ms | 321.801 ms | 446.081 ms | 1,399.288 ms | 0 | 0 |
+| 6-node | 2 | 5,504 | 316.074 ms | 196.197 ms | 408.481 ms | 772.294 ms | 76,754.911 ms | 39 | 2 |
+
+Final index-level stats for the optimization reruns:
+
+| Topology | Workers | Total indexing throttle | Total merge throttled | Total flush time | Segments |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| EBS6000 | 1 | 63,596 ms | 686,664 ms | 4,164,158 ms | 181 |
+| EBS6000 | 2 | 338,905 ms | 1,111,000 ms | 4,642,229 ms | 208 |
+| 6-node | 1 | 0 ms | 582,868 ms | 3,588,225 ms | 315 |
+| 6-node | 2 | 0 ms | 1,028,394 ms | 2,984,368 ms | 373 |
+
 ## Interpretation
 
 The multi-node ES topology more than doubled single-node ES throughput from the
@@ -194,15 +241,26 @@ created substantially worse long-tail latency. The bottleneck was ES internal
 flush, merge, and indexing throttle on the 100GB gp3 baseline volumes, not the
 Go client and not HTTP endpoint imbalance.
 
-For the next ES write test on this topology, do not run `workers=4` with the
-same 3000 IOPS / 125 MiB/s gp3 volumes. The useful next steps are:
+Increasing gp3 performance on the 3-node cluster improved throughput from
+14,459.0 to about 16,650 rows/s, but the modeled hourly cost also rose from
+about $0.724/h to about $0.836/h. Throughput per dollar therefore did not
+materially improve.
+
+Rolling gp3 back to baseline and increasing data-node count to six changed the
+result more materially. With `workers=2`, the 6-node cluster reached 27,812.6
+rows/s, count matched exactly, and there were no client retries or ES
+write-thread rejections. It still produced long-tail bulk stalls, including two
+batches above 60 seconds, so larger runs should continue to track max latency,
+merge throttle, flush time, and store growth.
+
+Current ES write-test guidance:
 
 ```text
-1. Use workers=1 as the 10GB production-topology baseline.
-2. If testing larger data on the same nodes, start with workers=1 and watch
+1. Use the 6-node workers=2 result as the current 10GB ES write baseline.
+2. If testing larger data on the same nodes, start with workers=2 and watch
    merge.total_throttled_time, flush.total_time, and max bulk latency.
-3. For 100GB or 1TB planning, increase gp3 throughput/IOPS or data-node count
-   before raising writer concurrency.
+3. Prefer adding data nodes before raising gp3 performance further, based on
+   the current cost-efficiency result.
 4. Keep the same indexed field surface and one-replica setting when comparing
    against TiCI.
 ```
@@ -214,10 +272,10 @@ Production-style 10GB primary-store ratio:
 ```text
 w1 primary/local parquet: 18,610,717,581 / 10,013,628,561 = 1.86x
 w2 primary/local parquet: 19,081,655,132 / 10,013,628,561 = 1.91x
+6-node w2 primary/local parquet: 20,830,128,455 / 10,013,628,561 = 2.08x
 ```
 
-For a later 1TB local parquet run, use about `1.9TB` primary store as the
-planning baseline. With one replica this is about `3.8TB` ES store before
-headroom. With 25% disk headroom, the raw ES data capacity target is about
-`5.1TB`.
-
+For a later 1TB local parquet run, use about `1.9TB` to `2.1TB` primary store
+as the planning baseline. With one replica this is about `3.8TB` to `4.2TB` ES
+store before headroom. With 25% disk headroom, the raw ES data capacity target
+is about `5.1TB` to `5.6TB`.

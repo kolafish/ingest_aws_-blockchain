@@ -12,6 +12,8 @@ results/es-prod10g-20260507/es_prod10g_20260507T003415_es_prod10g_w1_b5000.jsonl
 results/es-prod10g-20260507/es_prod10g_20260507T010726_es_prod10g_w2_b5000.jsonl
 results/es-prod10g-20260507/resource_20260507T003415_es_prod10g_w1_b5000.log
 results/es-prod10g-20260507/resource_20260507T010726_es_prod10g_w2_b5000.log
+results/es-ebs6000-20260507/
+results/es-6node-20260507/
 ```
 
 TiCI/TiDB has summary evidence captured in:
@@ -87,6 +89,27 @@ w2 total flush.total_time: 5,687,767 ms
 
 w2 added more client concurrency but became slower. The counters above show the
 extra concurrency amplified ES background write pressure and long-tail stalls.
+
+Follow-up ES optimization runs:
+
+| Topology | Workers | Rows/s | Retries | Max bulk latency | Total indexing throttle | Total merge throttled | Total flush time |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 3-node gp3 baseline | 1 | 14,459.0 | 0 | 111.2s | 13.843s | 728.967s | 4,135.713s |
+| 3-node gp3 baseline | 2 | 13,364.8 | 6 | 333.7s | 528.180s | 1,505.607s | 5,687.767s |
+| 3-node EBS6000 | 1 | 16,588.9 | 1 | 157.3s | 63.596s | 686.664s | 4,164.158s |
+| 3-node EBS6000 | 2 | 16,650.9 | 3 | 252.4s | 338.905s | 1,111.000s | 4,642.229s |
+| 6-node gp3 baseline | 1 | 20,414.7 | 0 | 1.4s | 0.000s | 582.868s | 3,588.225s |
+| 6-node gp3 baseline | 2 | 27,812.6 | 0 | 76.8s | 0.000s | 1,028.394s | 2,984.368s |
+
+This supports two narrower conclusions:
+
+```text
+1. Raising gp3 from 3000/125 to 6000/250 helped raw throughput but left long
+   tail stalls and did not materially improve throughput per dollar.
+2. Reverting gp3 to baseline and doubling ES data nodes removed indexing
+   throttle in the final index stats and scaled w2 throughput to 27,812.6
+   rows/s, but merge throttling and occasional bulk long tails remained.
+```
 
 ## TiCI/TiDB
 
@@ -179,7 +202,8 @@ node CPU, memory, disk IO, disk fullness, and network every 10s
 
 | System | Current bottleneck supported by evidence | Confidence |
 | --- | --- | --- |
-| ES prod10g w1/w2 | ES internal flush/merge/indexing throttle on baseline gp3 storage | High |
+| ES 3-node baseline | ES internal flush/merge/indexing throttle on baseline gp3 storage | High |
+| ES 3-node EBS6000 | Still ES internal write/merge pressure; gp3 increase alone was not cost-effective | High |
+| ES 6-node baseline | Throughput improved with node count; remaining risk is merge/flush long-tail, not client or write-thread rejection | High |
 | TiCI clean w1/w2 | TiDB/TiKV write/commit path, not TiCI worker catch-up | Medium |
 | TiCI w4 invalid | TiKV storage capacity/storage pressure | High |
-

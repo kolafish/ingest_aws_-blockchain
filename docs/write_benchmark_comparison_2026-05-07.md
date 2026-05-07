@@ -45,6 +45,8 @@ not included: S3, network transfer, snapshots, NAT, support, discounts,
 | TiCI/TiDB | 5 x `c5.xlarge`, 3 x `r5.xlarge` | $1.606 | $0.127 | $1.733 | 708GB EBS |
 | TiCI/TiDB m5-worker rerun | 5 x `c5.xlarge`, 2 x `r5.xlarge`, 1 x `m5.2xlarge` | $1.738 | $0.149 | $1.887 | 908GB EBS |
 | ES prod10g | 4 x `c5.xlarge` | $0.680 | $0.044 | $0.724 | 400GB EBS |
+| ES prod10g EBS6000 | 4 x `c5.xlarge` | $0.680 | $0.156 | $0.836 | 400GB EBS |
+| ES prod10g 6-node | 7 x `c5.xlarge` | $1.190 | $0.078 | $1.268 | 700GB EBS |
 
 TiCI/TiDB baseline EBS detail:
 
@@ -79,6 +81,13 @@ ES prod10g EBS detail:
 | es-3 | `c5.xlarge` | 100GB gp3 | 3000 | 125 MiB/s |
 | driver | `c5.xlarge` | 100GB gp3 | 3000 | 125 MiB/s |
 
+ES optimization reruns:
+
+| Run family | ES data nodes | Driver | Volume | IOPS | Throughput | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| ES prod10g EBS6000 | 3 x `c5.xlarge` | 1 x `c5.xlarge` | 100GB gp3 each | 6000 | 250 MiB/s | Same 3 primary shards, 1 replica |
+| ES prod10g 6-node | 6 x `c5.xlarge` | 1 x `c5.xlarge` | 100GB gp3 each | 3000 | 125 MiB/s | 6 primary shards, 1 replica |
+
 ## Dataset Caveat
 
 The TiCI and ES runs were both about 10GB, but they used slightly different
@@ -87,7 +96,7 @@ date slices:
 | System | Manifest entries | Local parquet bytes | Rows | Logical bytes |
 | --- | ---: | ---: | ---: | ---: |
 | TiCI/TiDB smoke | 17 | 10,086,645,566 | 27,045,923 | 39,367,669,486 |
-| ES prod10g | 18 | 10,013,628,561 | 27,489,769 | 39,399,039,010 |
+| ES prod10g, EBS6000, 6-node | 18 | 10,013,628,561 | 27,489,769 | 39,399,039,010 |
 
 Use the rows/s and cost ratios as directionally useful 10GB sizing data. For a
 strict final comparison, rerun both systems on the same manifest.
@@ -106,19 +115,27 @@ cost for that run divided by rows written. Lower is better.
 | TiCI/TiDB m5-worker | `20260507T050330Z_m5cpu8_w2_b500` | 2 | 500 | 27,045,923 | 1,967.41s | 13,746.9 | 20.01 | $1.887/h | 7,285 | $1.0313 | $0.0381 |
 | ES prod10g | `20260507T003415_es_prod10g_w1_b5000` | 1 | 5000 | 27,489,769 | 1,901.22s | 14,459.0 | 20.72 | $0.724/h | 19,959 | $0.3826 | $0.0139 |
 | ES prod10g | `20260507T010726_es_prod10g_w2_b5000` | 2 | 5000 | 27,489,769 | 2,056.88s | 13,364.8 | 19.15 | $0.724/h | 18,448 | $0.4139 | $0.0151 |
+| ES EBS6000 | `20260507T064258Z_es_ebs6000_w1_b5000` | 1 | 5000 | 27,489,769 | 1,657.12s | 16,588.9 | 23.78 | $0.836/h | 19,854 | $0.3846 | $0.0140 |
+| ES EBS6000 | `20260507T071159Z_es_ebs6000_w2_b5000` | 2 | 5000 | 27,489,769 | 1,650.95s | 16,650.9 | 23.86 | $0.836/h | 19,928 | $0.3832 | $0.0139 |
+| ES 6-node | `20260507T075452Z_es_6node_gp3base_w1_b5000` | 1 | 5000 | 27,489,769 | 1,346.57s | 20,414.7 | 29.26 | $1.268/h | 16,103 | $0.4742 | $0.0173 |
+| ES 6-node | `20260507T081808Z_es_6node_gp3base_w2_b5000` | 2 | 5000 | 27,489,769 | 988.39s | 27,812.6 | 39.86 | $1.268/h | 21,938 | $0.3481 | $0.0127 |
 
 Current best clean points:
 
 | System | Best clean run | Rows/s | Modeled hourly | Rows/s per $/h | $ per 1M rows |
 | --- | --- | ---: | ---: | ---: | ---: |
 | TiCI/TiDB | TiCI w2 | 14,686.7 | $1.733/h | 8,475 | $0.0328 |
-| ES prod10g | ES w1 | 14,459.0 | $0.724/h | 19,959 | $0.0139 |
+| ES prod10g baseline | ES w1 | 14,459.0 | $0.724/h | 19,959 | $0.0139 |
+| ES current best | ES 6-node w2 | 27,812.6 | $1.268/h | 21,938 | $0.0127 |
 
-Interpretation: at this 10GB scale and current topology, ES prod10g w1 had
-similar write throughput to TiCI w2, but used a smaller and cheaper cluster.
-That gives ES better write-throughput-per-dollar in this smoke. It is not yet a
-1TB conclusion because the TiCI and ES storage and replication models are not
-identical, and the runs used slightly different manifests.
+Interpretation: at this 10GB scale, ES prod10g baseline w1 had similar write
+throughput to TiCI w2, but used a smaller and cheaper cluster. Increasing gp3
+IOPS/throughput on the 3-node ES cluster improved raw throughput but did not
+materially improve throughput per dollar. Rolling EBS back to baseline and
+doubling ES data nodes gave the best current ES write point: 27,812.6 rows/s
+and the lowest runtime cost per million rows in this smoke. It is not yet a 1TB
+conclusion because the TiCI and ES storage and replication models are not
+identical, and the TiCI and ES runs used slightly different manifests.
 
 The m5.2xlarge TiCI worker rerun did not improve the TiDB-side insert rate:
 single writer changed from 9,611.5 rows/s to 9,503.7 rows/s, and two writers
@@ -136,6 +153,10 @@ therefore did not translate into higher front-door write throughput in this
 | TiCI/TiDB m5-worker | w2 | TiDB `INSERT` ack, TiCI indexes through TiCDC | Last insert about 2026-05-07 05:37:33 UTC; TiCDC checkpoint reached 2026-05-07 05:38:06.250 UTC; CDC send/list-unread metrics were 0 after catch-up | table id 196; `SELECT COUNT(*)` on 2026-05-07 returned 27,045,923 rows |
 | ES prod10g | w1 | Bulk ack includes primary indexing and one replica write | Bulk elapsed 1,901.22s; no async CDC catch-up; refresh/count verified after run | `_count` 27,489,769; health green |
 | ES prod10g | w2 | Bulk ack includes primary indexing and one replica write | Bulk elapsed 2,056.88s; no async CDC catch-up; refresh/count verified after run | `_count` 27,489,769; health green |
+| ES EBS6000 | w1 | Bulk ack includes primary indexing and one replica write | Bulk elapsed 1,657.12s; post-run refresh 11.417s | `_count` 27,489,769; health green |
+| ES EBS6000 | w2 | Bulk ack includes primary indexing and one replica write | Bulk elapsed 1,650.95s; post-run refresh 11.027s | `_count` 27,489,769; health green |
+| ES 6-node | w1 | Bulk ack includes primary indexing and one replica write | Bulk elapsed 1,346.57s; post-run refresh 23.864s | `_count` 27,489,769; health green |
+| ES 6-node | w2 | Bulk ack includes primary indexing and one replica write | Bulk elapsed 988.39s; post-run refresh 17.019s | `_count` 27,489,769; health green |
 
 For future runs, record TiCI catch-up with exact timestamps for every worker
 setting, and record ES last bulk ack to post-refresh timing separately. The
@@ -152,12 +173,16 @@ fully precise searchable-latency comparison.
 | TiCI/TiDB m5-worker | w2 | `frags/t_196`: 75,667,304,034 bytes | `cdc/196`: 34,864,673,511 bytes; combined retained: 110,531,977,545 bytes | bucket prefix `tici_default_prefix/` |
 | ES prod10g | w1 | total store: 36,990,943,496 bytes; primary store: 18,610,717,581 bytes | included in ES store | 3 primary shards, 1 replica |
 | ES prod10g | w2 | total store: 37,383,592,759 bytes; primary store: 19,081,655,132 bytes | included in ES store | 3 primary shards, 1 replica; 16,572 deleted docs after retries |
+| ES EBS6000 | w1 | total store: 34,726,546,709 bytes; primary store: 17,359,372,888 bytes | included in ES store | 3 primary shards, 1 replica; 1 retry |
+| ES EBS6000 | w2 | total store: 35,937,181,742 bytes; primary store: 17,828,000,708 bytes | included in ES store | 3 primary shards, 1 replica; 3 retries |
+| ES 6-node | w1 | total store: 40,348,004,963 bytes; primary store: 19,733,296,829 bytes | included in ES store | 6 primary shards, 1 replica; 0 retries |
+| ES 6-node | w2 | total store: 39,382,490,643 bytes; primary store: 20,830,128,455 bytes | included in ES store | 6 primary shards, 1 replica; 0 retries |
 
 Storage interpretation:
 
 ```text
-ES physical store with one replica: about 37GB for 10GB parquet input.
-ES primary-only store: about 18.6GB to 19.1GB.
+ES physical store with one replica: about 35GB to 40GB for 10GB parquet input.
+ES primary-only store: about 17.4GB to 20.8GB.
 TiCI S3 fragment size varied by run: 59GB to 96GB.
 TiCI retained CDC plus fragments varied from about 110GB to 157GB.
 ```
@@ -204,6 +229,20 @@ The limiter was ES flush/merge/indexing throttle on 100GB gp3 baseline disks,
 not Go client throughput and not write-thread rejection.
 ```
 
+ES optimization reruns:
+
+```text
+EBS6000 w1: 16,588.9 rows/s, 1 retry, max bulk latency 157.3s.
+EBS6000 w2: 16,650.9 rows/s, 3 retries, max bulk latency 252.4s.
+6-node w1: 20,414.7 rows/s, 0 retries, max bulk latency 1.4s.
+6-node w2: 27,812.6 rows/s, 0 retries, max bulk latency 76.8s.
+
+Increasing gp3 performance improved raw throughput by about 15% versus ES
+baseline w1 but did not improve cost efficiency. Reverting gp3 to baseline and
+doubling data-node count improved ES w2 throughput by about 108% versus the
+3-node baseline w2, with no write-thread rejection and no client retries.
+```
+
 ## Next Measurement Changes
 
 For the next comparable run:
@@ -215,5 +254,6 @@ For the next comparable run:
    and max bulk latency for every worker setting.
 4. Add S3 cost for TiCI retained `frags/` and `cdc/` prefixes if those objects
    will remain after the run.
-5. For 100GB or 1TB, do not extrapolate only from average rows/s. ES w2 already
-   showed severe long-tail stalls from flush/merge throttle on baseline gp3.
+5. For 100GB or 1TB, do not extrapolate only from average rows/s. ES still
+   showed long-tail bulk stalls under higher concurrency, even when retries
+   disappeared on the 6-node cluster.
