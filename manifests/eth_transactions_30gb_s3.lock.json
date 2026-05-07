@@ -1,0 +1,380 @@
+{
+  "name": "eth_transactions_30gb_s3_lock",
+  "dataset": "eth_transactions",
+  "region": "us-east-2",
+  "target_bytes": 30000000000,
+  "created_at": "2026-05-07T10:28:54Z",
+  "entries": [
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-09-19/part-00000-b8655862-1263-4316-b2a2-b1a96ed36dee-c000.snappy.parquet",
+      "date": "2025-09-19",
+      "size_bytes": 657912142
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-09-20/part-00000-78be764c-2287-42d7-b19f-ca7d0f08ae05-c000.snappy.parquet",
+      "date": "2025-09-20",
+      "size_bytes": 671143145
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-09-21/part-00000-bbb61f96-a3ca-45a9-ad31-3d406258dbe3-c000.snappy.parquet",
+      "date": "2025-09-21",
+      "size_bytes": 512151510
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-09-22/part-00000-d81d243c-55e9-4274-ac05-66b560e1ea25-c000.snappy.parquet",
+      "date": "2025-09-22",
+      "size_bytes": 563159638
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-09-23/part-00000-4bdb512a-5e9b-4221-aa0c-fd1e9fb41d5d-c000.snappy.parquet",
+      "date": "2025-09-23",
+      "size_bytes": 666057392
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-09-24/part-00000-8a259973-2c56-422c-a3f5-da6de92625ef-c000.snappy.parquet",
+      "date": "2025-09-24",
+      "size_bytes": 644977747
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-09-25/part-00000-50b9bb24-fd5a-4e55-9167-b6f666933cab-c000.snappy.parquet",
+      "date": "2025-09-25",
+      "size_bytes": 629196581
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-09-26/part-00000-82f7a86a-d274-403e-982e-ae0a81536ee2-c000.snappy.parquet",
+      "date": "2025-09-26",
+      "size_bytes": 640379106
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-09-27/part-00000-22bae6b0-371c-4b0b-b259-a7ef1e03eeb8-c000.snappy.parquet",
+      "date": "2025-09-27",
+      "size_bytes": 662759161
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-09-28/part-00000-5bbe9a56-2cba-4501-bbc6-d9b6ae78d0dd-c000.snappy.parquet",
+      "date": "2025-09-28",
+      "size_bytes": 539217152
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-09-29/part-00000-1729b231-8f01-423d-950b-a8bb6abc9a2d-c000.snappy.parquet",
+      "date": "2025-09-29",
+      "size_bytes": 650967633
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-09-30/part-00000-e96366ea-00ed-41d3-b883-709afd2186ea-c000.snappy.parquet",
+      "date": "2025-09-30",
+      "size_bytes": 660296012
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-01/part-00000-6317dd5c-39b5-499c-b427-3500481f022b-c000.snappy.parquet",
+      "date": "2025-10-01",
+      "size_bytes": 650477699
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-02/part-00000-20c48528-1aa5-4386-83e1-c71b45b7a394-c000.snappy.parquet",
+      "date": "2025-10-02",
+      "size_bytes": 653348595
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-03/part-00000-4be74ff7-dc67-4a30-b2c1-9b4f19e971a1-c000.snappy.parquet",
+      "date": "2025-10-03",
+      "size_bytes": 646931376
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-04/part-00000-63de7fd9-7c64-4f14-8492-5d39e934ffcc-c000.snappy.parquet",
+      "date": "2025-10-04",
+      "size_bytes": 489103204
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-05/part-00000-e9fc27a9-9df8-4833-b887-86561d5eb52e-c000.snappy.parquet",
+      "date": "2025-10-05",
+      "size_bytes": 508419970
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-06/part-00000-af02d78c-2e97-4c17-a337-f55566ba0c6f-c000.snappy.parquet",
+      "date": "2025-10-06",
+      "size_bytes": 611999931
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-07/part-00000-343f0cbb-ec4b-4513-abd8-16a150a110b6-c000.snappy.parquet",
+      "date": "2025-10-07",
+      "size_bytes": 647760444
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-08/part-00000-544c1b5a-9ced-4b82-87d7-864c145ee190-c000.snappy.parquet",
+      "date": "2025-10-08",
+      "size_bytes": 624464011
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-09/part-00000-b39cf186-bef5-4dcd-a0f3-2e344a5eb556-c000.snappy.parquet",
+      "date": "2025-10-09",
+      "size_bytes": 615678314
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-10/part-00000-2dad8c3f-3c18-4682-b355-79ef57a8cbdb-c000.snappy.parquet",
+      "date": "2025-10-10",
+      "size_bytes": 622109990
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-11/part-00000-3db4b800-7ba8-477f-98c7-2689deefd21b-c000.snappy.parquet",
+      "date": "2025-10-11",
+      "size_bytes": 627071657
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-12/part-00000-b05d8493-8821-45eb-b449-f82d439a387d-c000.snappy.parquet",
+      "date": "2025-10-12",
+      "size_bytes": 545207689
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-13/part-00000-f679c567-b27e-4390-9040-0dae9b35c2aa-c000.snappy.parquet",
+      "date": "2025-10-13",
+      "size_bytes": 554882479
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-14/part-00000-796b3ef0-e7aa-4c86-b286-c78081e59cd8-c000.snappy.parquet",
+      "date": "2025-10-14",
+      "size_bytes": 554972011
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-15/part-00000-ddcf04ef-2a2c-4980-a97c-09530d2a24d2-c000.snappy.parquet",
+      "date": "2025-10-15",
+      "size_bytes": 601207174
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-16/part-00000-229abf00-46d4-41d1-aa89-047a34e28eaa-c000.snappy.parquet",
+      "date": "2025-10-16",
+      "size_bytes": 538964381
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-17/part-00000-1f3a3e18-bcdf-480e-adb7-e4bab4e7bdd9-c000.snappy.parquet",
+      "date": "2025-10-17",
+      "size_bytes": 594046641
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-18/part-00000-9d53d154-63bf-4995-80a1-5ab136cd3d6b-c000.snappy.parquet",
+      "date": "2025-10-18",
+      "size_bytes": 478617253
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-19/part-00000-da54e7e4-50aa-47e0-9a63-b103afdcbbee-c000.snappy.parquet",
+      "date": "2025-10-19",
+      "size_bytes": 444956669
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-20/part-00000-48d815fd-62f4-4d62-b09b-033ffbe0e29b-c000.snappy.parquet",
+      "date": "2025-10-20",
+      "size_bytes": 490239974
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-21/part-00000-1958d94d-331a-4b27-91dd-ff1e3ab823f3-c000.snappy.parquet",
+      "date": "2025-10-21",
+      "size_bytes": 512189691
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-22/part-00000-7af929af-8b09-4554-a891-53ff858e070f-c000.snappy.parquet",
+      "date": "2025-10-22",
+      "size_bytes": 526795973
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-23/part-00000-9a8b37a0-74bf-4a9f-9dda-6516ab7b40ad-c000.snappy.parquet",
+      "date": "2025-10-23",
+      "size_bytes": 503671101
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-24/part-00000-a960caf3-3988-456a-a89f-7d6674a45120-c000.snappy.parquet",
+      "date": "2025-10-24",
+      "size_bytes": 500840715
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-25/part-00000-9b13f2eb-69a6-4125-97af-4948d0299869-c000.snappy.parquet",
+      "date": "2025-10-25",
+      "size_bytes": 444109581
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-26/part-00000-55e50019-5f9f-4dfe-92d3-0ce43822a65a-c000.snappy.parquet",
+      "date": "2025-10-26",
+      "size_bytes": 437107171
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-27/part-00000-2eb88b9d-a199-4007-9a90-8269c65f7c02-c000.snappy.parquet",
+      "date": "2025-10-27",
+      "size_bytes": 543700944
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-28/part-00000-d1019246-dd4a-4b04-a9dd-923b3172f942-c000.snappy.parquet",
+      "date": "2025-10-28",
+      "size_bytes": 587764895
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-29/part-00000-aab34913-ba23-4de4-bd29-258a84351295-c000.snappy.parquet",
+      "date": "2025-10-29",
+      "size_bytes": 537783827
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-30/part-00000-dace3721-cdc7-4cd5-bff7-f74914e601f7-c000.snappy.parquet",
+      "date": "2025-10-30",
+      "size_bytes": 607295201
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-10-31/part-00000-bbc25dc0-e348-456b-8b1a-ff563e0c8189-c000.snappy.parquet",
+      "date": "2025-10-31",
+      "size_bytes": 605650817
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-11-01/part-00000-bae13332-0adc-4beb-88cf-bed76b07a44a-c000.snappy.parquet",
+      "date": "2025-11-01",
+      "size_bytes": 459673174
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-11-02/part-00000-9b21d89b-5814-4018-a873-9c8c13e1a1b6-c000.snappy.parquet",
+      "date": "2025-11-02",
+      "size_bytes": 502914070
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-11-03/part-00000-4ededbfe-4150-4c8d-ae1b-c685026aa3cd-c000.snappy.parquet",
+      "date": "2025-11-03",
+      "size_bytes": 625232067
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-11-04/part-00000-36d5bfd1-76af-43cd-bb77-0f07467e7232-c000.snappy.parquet",
+      "date": "2025-11-04",
+      "size_bytes": 633062464
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-11-05/part-00000-74d29e54-30f6-4e56-8554-972acdbded9f-c000.snappy.parquet",
+      "date": "2025-11-05",
+      "size_bytes": 610823163
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-11-06/part-00000-ab251eed-2d26-460f-adf7-397e37ab7180-c000.snappy.parquet",
+      "date": "2025-11-06",
+      "size_bytes": 615299226
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-11-07/part-00000-280bb527-d665-4588-860b-b8307ee65f0f-c000.snappy.parquet",
+      "date": "2025-11-07",
+      "size_bytes": 558527841
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-11-08/part-00000-1bec413d-da7e-474c-a91d-1e5667ca02cb-c000.snappy.parquet",
+      "date": "2025-11-08",
+      "size_bytes": 561704967
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-11-09/part-00000-61f29170-2b57-4d45-ac4e-b40fb2bc83bc-c000.snappy.parquet",
+      "date": "2025-11-09",
+      "size_bytes": 547703689
+    },
+    {
+      "source": "s3",
+      "bucket": "aws-public-blockchain",
+      "key": "v1.0/eth/transactions/date=2025-11-10/part-00000-5a1ab6cd-e8a9-482a-a258-6e37ebffdb1e-c000.snappy.parquet",
+      "date": "2025-11-10",
+      "size_bytes": 565628841
+    }
+  ]
+}
