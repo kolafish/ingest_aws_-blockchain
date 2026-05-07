@@ -183,12 +183,17 @@ Stop or destroy the TiCI smoke cluster before starting Elasticsearch smoke.
 
 ## Elasticsearch Smoke
 
-Use a single-node self-managed Elasticsearch cluster for smoke:
+The original low-cost Elasticsearch smoke used a single self-managed node:
 
 ```text
 es-1: master + data + ingest
 driver-1: Go writer and metrics collection
 ```
+
+That single-node shape is only a functional gate. It is not a production-style
+capacity baseline for 1TB because it has no replica cost, no master quorum, and
+no cross-node shard distribution. Use
+`docs/elasticsearch_production_rerun_plan.md` for the production-style rerun.
 
 Create the index before timing:
 
@@ -210,6 +215,21 @@ go run ./cmd/es-writer \
   --batch-rows 5000 \
   --batch-bytes 10000000 \
   --result-jsonl results/smoke_es_bulk.jsonl
+```
+
+For a multi-node production-style run, pass comma-separated data-node or
+coordinating-node URLs:
+
+```bash
+go run ./cmd/es-writer \
+  --manifest bench/manifests/eth_transactions_100gb.json \
+  --url "http://172.31.21.1:9200,http://172.31.21.2:9200,http://172.31.21.3:9200" \
+  --index eth_transactions \
+  --workers 4 \
+  --reader-workers 8 \
+  --batch-rows 5000 \
+  --batch-bytes 10000000 \
+  --result-jsonl results/prod_es_bulk.jsonl
 ```
 
 After the last bulk ack, measure searchable/store-stable time separately:

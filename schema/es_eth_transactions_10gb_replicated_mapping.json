@@ -1,0 +1,113 @@
+{
+  "settings": {
+    "number_of_shards": 3,
+    "number_of_replicas": 1,
+    "refresh_interval": "-1",
+    "index": {
+      "routing.allocation.include._tier_preference": "data_hot",
+      "sort.field": ["block_timestamp", "gas_price"],
+      "sort.order": ["desc", "desc"]
+    }
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "date": {
+        "type": "keyword",
+        "doc_values": false
+      },
+      "hash": {
+        "type": "keyword",
+        "doc_values": false
+      },
+      "from_address": {
+        "type": "keyword",
+        "doc_values": false
+      },
+      "to_address": {
+        "type": "keyword",
+        "doc_values": false
+      },
+      "receipt_contract_address": {
+        "type": "keyword",
+        "doc_values": false
+      },
+      "block_timestamp": {
+        "type": "long"
+      },
+      "block_number": {
+        "type": "long",
+        "doc_values": false
+      },
+      "transaction_index": {
+        "type": "long",
+        "doc_values": false
+      },
+      "gas": {
+        "type": "long",
+        "doc_values": false
+      },
+      "gas_price": {
+        "type": "long"
+      },
+      "receipt_status": {
+        "type": "long",
+        "doc_values": false
+      },
+      "transaction_type": {
+        "type": "long",
+        "doc_values": false
+      },
+      "random_flag": {
+        "type": "boolean",
+        "doc_values": false
+      },
+      "nonce": {
+        "type": "long",
+        "index": false,
+        "doc_values": false
+      },
+      "value": {
+        "type": "double",
+        "index": false,
+        "doc_values": false
+      },
+      "input": {
+        "type": "keyword",
+        "index": false,
+        "doc_values": false,
+        "ignore_above": 1024
+      },
+      "receipt_cumulative_gas_used": {
+        "type": "long",
+        "index": false,
+        "doc_values": false
+      },
+      "receipt_gas_used": {
+        "type": "long",
+        "index": false,
+        "doc_values": false
+      },
+      "block_hash": {
+        "type": "keyword",
+        "index": false,
+        "doc_values": false
+      },
+      "max_fee_per_gas": {
+        "type": "long",
+        "index": false,
+        "doc_values": false
+      },
+      "max_priority_fee_per_gas": {
+        "type": "long",
+        "index": false,
+        "doc_values": false
+      },
+      "receipt_effective_gas_price": {
+        "type": "long",
+        "index": false,
+        "doc_values": false
+      }
+    }
+  }
+}

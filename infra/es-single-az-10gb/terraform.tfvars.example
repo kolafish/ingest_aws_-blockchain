@@ -1,0 +1,11 @@
+vpc_id    = "vpc-0a7d241be510419f7"
+subnet_id = "subnet-042b29068fd1ac284"
+key_name  = "terraform-20260324123701845300000002"
+
+instance_type     = "c5.xlarge"
+volume_size_gb    = 100
+volume_iops       = 3000
+volume_throughput = 125
+
+es_private_ips    = ["172.31.21.1", "172.31.21.2", "172.31.21.3"]
+driver_private_ip = "172.31.22.1"

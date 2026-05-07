@@ -21,7 +21,7 @@ import (
 func main() {
 	var (
 		manifestPath  = flag.String("manifest", "", "Local parquet manifest.")
-		esURL         = flag.String("url", envDefault("ES_URL", "http://127.0.0.1:9200"), "Elasticsearch URL.")
+		esURL         = flag.String("url", envDefault("ES_URL", "http://127.0.0.1:9200"), "Elasticsearch URL. Use commas to provide multiple endpoints.")
 		index         = flag.String("index", "eth_transactions", "Elasticsearch index.")
 		user          = flag.String("user", os.Getenv("ES_USER"), "Elasticsearch user.")
 		password      = flag.String("password", os.Getenv("ES_PASSWORD"), "Elasticsearch password.")
@@ -47,6 +47,11 @@ func main() {
 	if err := manifest.ValidateLocal(); err != nil {
 		fmt.Fprintf(os.Stderr, "validate manifest: %v\n", err)
 		os.Exit(1)
+	}
+	esURLs := parseURLs(*esURL)
+	if len(esURLs) == 0 {
+		fmt.Fprintln(os.Stderr, "--url must contain at least one Elasticsearch endpoint")
+		os.Exit(2)
 	}
 	results, err := ethbench.NewResultWriter(*resultPath)
 	if err != nil {
@@ -74,13 +79,13 @@ func main() {
 				batch = append(batch, record)
 				batchSize += recordBytes + 128
 				if len(batch) >= *batchRows || batchSize >= *batchBytes {
-					flushESBatch(ctx, client, results, *esURL, *index, *user, *password, *runID, batch, *retries, &ingestWindow, &batchID, &totalRows, &totalBytes, &totalErrors)
+					flushESBatch(ctx, client, results, esURLs, *index, *user, *password, *runID, batch, *retries, &ingestWindow, &batchID, &totalRows, &totalBytes, &totalErrors)
 					batch = batch[:0]
 					batchSize = 0
 				}
 			}
 			if len(batch) > 0 {
-				flushESBatch(ctx, client, results, *esURL, *index, *user, *password, *runID, batch, *retries, &ingestWindow, &batchID, &totalRows, &totalBytes, &totalErrors)
+				flushESBatch(ctx, client, results, esURLs, *index, *user, *password, *runID, batch, *retries, &ingestWindow, &batchID, &totalRows, &totalBytes, &totalErrors)
 			}
 		}()
 	}
@@ -102,7 +107,7 @@ func main() {
 	}
 }
 
-func flushESBatch(ctx context.Context, client *http.Client, results *ethbench.ResultWriter, esURL, index, user, password, runID string, batch []ethbench.EthTransaction, maxRetries int, ingestWindow *ethbench.IngestWindow, batchID, totalRows, totalBytes, totalErrors *int64) {
+func flushESBatch(ctx context.Context, client *http.Client, results *ethbench.ResultWriter, esURLs []string, index, user, password, runID string, batch []ethbench.EthTransaction, maxRetries int, ingestWindow *ethbench.IngestWindow, batchID, totalRows, totalBytes, totalErrors *int64) {
 	id := atomic.AddInt64(batchID, 1)
 	logicalBytes := int64(0)
 	for _, record := range batch {
@@ -113,6 +118,7 @@ func flushESBatch(ctx context.Context, client *http.Client, results *ethbench.Re
 	started := time.Now()
 	attempt := 0
 	for ; attempt <= maxRetries; attempt++ {
+		esURL := esURLs[int((id+int64(attempt))%int64(len(esURLs)))]
 		err = execESBulk(ctx, client, esURL, index, user, password, batch)
 		if err == nil {
 			break
@@ -215,4 +221,17 @@ func envDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func parseURLs(value string) []string {
+	parts := strings.Split(value, ",")
+	urls := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		urls = append(urls, trimmed)
+	}
+	return urls
 }

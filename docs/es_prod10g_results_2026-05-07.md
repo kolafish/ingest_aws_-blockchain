@@ -1,0 +1,223 @@
+# Elasticsearch Production-Style 10GB Results - 2026-05-07
+
+This records the first multi-node Elasticsearch write-path rerun for the
+Ethereum transactions 10GB dataset. It replaces the earlier single-node ES smoke
+as the planning baseline for larger ES write tests.
+
+## Topology
+
+AWS region: `us-west-2`
+
+```text
+es-1..3:
+  count: 3
+  instance type: c5.xlarge
+  vCPU/RAM: 4 vCPU, 8 GiB RAM each
+  Elasticsearch: 9.3.4 tarball, bundled JDK
+  heap: -Xms4g -Xmx4g
+  roles: master, data_hot, ingest
+  root volume: 100GB gp3, 3000 IOPS, 125 MiB/s
+
+driver:
+  count: 1
+  instance type: c5.xlarge
+  role: Go writer, local parquet staging, metrics
+  root volume: 100GB gp3, 3000 IOPS, 125 MiB/s
+```
+
+The cluster was single-AZ to keep cost low, but used three master-eligible data
+nodes and one replica to exercise production-relevant shard distribution and
+replica-write cost.
+
+Instance launch time for this run:
+
+```text
+2026-05-07T00:19:11Z
+```
+
+The TiCI/TiDB testbed was stopped before creating this ES stack. The ES stack
+used independent Terraform state under `infra/es-single-az-10gb`.
+
+## Dataset
+
+```text
+source: AWS public blockchain Ethereum transactions parquet
+dates: 2025-10-25 through 2025-11-11
+manifest: /home/ubuntu/bench/manifests/eth_transactions_prod10g.json
+manifest entries: 18
+local parquet bytes: 10,013,628,561
+logical rows: 27,489,769
+logical bytes: 39,399,039,010
+```
+
+Client dry-run on the driver:
+
+```text
+reader_workers=4
+encode=es
+elapsed: 263.48s
+rows/s: 104,332.3
+MB/s: 149.5
+errors: 0
+```
+
+The client reader/normalization path was not the bottleneck for either ES run.
+
+## Index Configuration
+
+Mapping:
+
+```text
+schema/es_eth_transactions_10gb_replicated_mapping.json
+```
+
+Key settings:
+
+```text
+number_of_shards: 3
+number_of_replicas: 1
+refresh_interval: -1 during timed ingest
+routing allocation tier: data_hot
+index sort: block_timestamp desc, gas_price desc
+dynamic mapping: strict
+no analyzed text fields or tokenizers
+```
+
+The indexed field surface matches the TiCI inverted-index smoke: keyword,
+numeric, date-like long, and boolean fields only. It does not add FTS/analyzed
+text fields on the ES side.
+
+## Write Results
+
+Both runs used all three ES HTTP endpoints:
+
+```text
+http://172.31.21.1:9200,http://172.31.21.2:9200,http://172.31.21.3:9200
+```
+
+| Run | Writer settings | Rows | Elapsed | Rows/s | MB/s | Errors | Retries | Result |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `20260507T003415_es_prod10g_w1_b5000` | `workers=1`, `reader_workers=4`, `batch_rows=5000` | 27,489,769 | 1,901.22s | 14,459.0 | 20.7 | 0 | 0 | clean |
+| `20260507T010726_es_prod10g_w2_b5000` | `workers=2`, `reader_workers=4`, `batch_rows=5000` | 27,489,769 | 2,056.88s | 13,364.8 | 19.2 | 0 | 6 | clean, but long-tail stalls |
+
+Bulk latency:
+
+| Run | Bulk requests | Avg | P50 | P95 | P99 | Max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| w1 | 5,503 | 306.029 ms | 232.145 ms | 440.968 ms | 709.836 ms | 111,207.747 ms |
+| w2 | 5,503 | 705.313 ms | 268.534 ms | 530.690 ms | 1,882.155 ms | 333,731.927 ms |
+
+The w2 retry events were concentrated in long-tail stalls:
+
+```text
+batch 2924: 333,731.927 ms, retry_count=2
+batch 3110: 246,047.200 ms, retry_count=2
+batch 3624: 137,823.034 ms, retry_count=1
+batch 4856: 190,488.878 ms, retry_count=1
+```
+
+Final w2 validation after refresh:
+
+```text
+_count: 27,489,769
+health: green
+docs.deleted: 16,572
+total store: 37,383,592,759 bytes
+primary store: 19,081,655,132 bytes
+write rejected: 0
+```
+
+`docs.deleted` is expected for this run because several bulk requests timed out
+client-side and were retried after Elasticsearch had already applied at least
+part of the request. The final `_count` still matched the manifest.
+
+## Elasticsearch Internal Stats
+
+Final w1 stats:
+
+```text
+primary store: 18,610,717,581 bytes
+total store: 36,990,943,496 bytes
+primaries indexing.index_total: 27,489,769
+primaries indexing.index_time: 835,765 ms
+primaries indexing.throttle_time: 6,923 ms
+total indexing.index_total: 54,979,538
+total indexing.index_time: 1,466,978 ms
+total indexing.throttle_time: 13,843 ms
+total merge.total_time: 1,597,086 ms
+total merge.total_throttled_time: 728,967 ms
+total refresh.total_time: 1,231,915 ms
+total flush.total_time: 4,135,713 ms
+segments: 186
+```
+
+Final w2 stats:
+
+```text
+primary store: 19,081,655,132 bytes
+total store: 37,383,592,759 bytes
+primaries indexing.index_total: 27,519,769
+primaries indexing.index_time: 1,471,067 ms
+primaries indexing.throttle_time: 175,506 ms
+total indexing.index_total: 55,039,538
+total indexing.index_time: 3,899,905 ms
+total indexing.throttle_time: 528,180 ms
+total merge.total_time: 2,217,860 ms
+total merge.total_throttled_time: 1,505,607 ms
+total refresh.total_time: 2,554,599 ms
+total flush.total_time: 5,687,767 ms
+segments: 207
+```
+
+w2 shard distribution after completion:
+
+| Shard | Primary node | Primary docs | Primary bytes | Replica node | Replica bytes |
+| --- | --- | ---: | ---: | --- | ---: |
+| 0 | es-3 | 9,161,498 | 6,191,146,388 | es-2 | 5,717,202,531 |
+| 1 | es-1 | 9,163,454 | 7,140,111,961 | es-2 | 5,805,110,197 |
+| 2 | es-3 | 9,164,817 | 5,750,396,783 | es-1 | 6,779,624,899 |
+
+## Interpretation
+
+The multi-node ES topology more than doubled single-node ES throughput from the
+previous smoke, but increasing writer concurrency from one to two workers did
+not help on this storage shape:
+
+```text
+single-node ES w1, no replica: 7,053.3 rows/s
+3-node ES w1, one replica:    14,459.0 rows/s
+3-node ES w2, one replica:    13,364.8 rows/s
+```
+
+The w2 run did not fail and did not produce write-thread rejections, but it
+created substantially worse long-tail latency. The bottleneck was ES internal
+flush, merge, and indexing throttle on the 100GB gp3 baseline volumes, not the
+Go client and not HTTP endpoint imbalance.
+
+For the next ES write test on this topology, do not run `workers=4` with the
+same 3000 IOPS / 125 MiB/s gp3 volumes. The useful next steps are:
+
+```text
+1. Use workers=1 as the 10GB production-topology baseline.
+2. If testing larger data on the same nodes, start with workers=1 and watch
+   merge.total_throttled_time, flush.total_time, and max bulk latency.
+3. For 100GB or 1TB planning, increase gp3 throughput/IOPS or data-node count
+   before raising writer concurrency.
+4. Keep the same indexed field surface and one-replica setting when comparing
+   against TiCI.
+```
+
+## Storage Scaling Estimate
+
+Production-style 10GB primary-store ratio:
+
+```text
+w1 primary/local parquet: 18,610,717,581 / 10,013,628,561 = 1.86x
+w2 primary/local parquet: 19,081,655,132 / 10,013,628,561 = 1.91x
+```
+
+For a later 1TB local parquet run, use about `1.9TB` primary store as the
+planning baseline. With one replica this is about `3.8TB` ES store before
+headroom. With 25% disk headroom, the raw ES data capacity target is about
+`5.1TB`.
+

@@ -174,6 +174,8 @@ Aligned schemas:
 ```text
 schema/tidb_eth_transactions.sql
 schema/es_eth_transactions_mapping.json
+schema/es_eth_transactions_10gb_replicated_mapping.json
+schema/es_eth_transactions_prod_1t_mapping.json
 ```
 
 Go tools:
@@ -186,7 +188,9 @@ go run ./cmd/es-writer --manifest bench/manifests/eth_transactions_10gb.json
 ```
 
 Detailed workflow: `docs/write_smoke_plan.md`.
+Production-style Elasticsearch rerun plan: `docs/elasticsearch_production_rerun_plan.md`.
 
 Recorded smoke results:
 
 - `docs/write_smoke_results_2026-05-06.md`
+- `docs/es_prod10g_results_2026-05-07.md`
