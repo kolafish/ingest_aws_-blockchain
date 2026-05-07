@@ -195,3 +195,4 @@ Recorded smoke results:
 - `docs/write_smoke_results_2026-05-06.md`
 - `docs/es_prod10g_results_2026-05-07.md`
 - `docs/write_benchmark_comparison_2026-05-07.md`
+- `docs/write_bottleneck_analysis_2026-05-07.md`
