@@ -207,3 +207,87 @@ node CPU, memory, disk IO, disk fullness, and network every 10s
 | ES 6-node baseline | Throughput improved with node count; remaining risk is merge/flush long-tail, not client or write-thread rejection | High |
 | TiCI clean w1/w2 | TiDB/TiKV write/commit path, not TiCI worker catch-up | Medium |
 | TiCI w4 invalid | TiKV storage capacity/storage pressure | High |
+| TiCI 30GB partial w2 | TiKV scheduler flow control from compaction debt plus TiCI worker local disk exhaustion | High |
+
+## TiCI 30GB Partial Run - 2026-05-07
+
+The canonical 30GB TiCI run was stopped by request after 75,576,500 rows
+because the TiCI worker exhausted local disk during fragment compaction. This
+section records the evidence without treating the run as a completed benchmark.
+
+Run summary:
+
+```text
+run_id: 20260507T123537Z_30gb_w2_b500
+target rows: 82,501,974
+inserted rows before stop: 75,576,500
+completion: 91.61%
+logical bytes inserted: 108,961,146,180
+elapsed: 9,465.161s
+throughput: 7,984.7 rows/s, 11.51 MB/s
+client retries: 0
+TiDB stats Row_count: 75,576,500
+```
+
+TiKV evidence:
+
+```text
+TiKV instance: r5.xlarge
+TiKV volume: 300GB gp3, 4000 IOPS, 288 MiB/s
+RocksDB default CF pending compaction bytes: observed up to about 176GiB
+5m Prometheus sample after stop:
+  default CF pending compaction bytes: 138,904,383,000
+  disk read: 104.6 MB/s
+  disk write: 44.6 MB/s
+  iowait: 1.285 cores
+TiKV log at 2026-05-07 15:12:30 UTC:
+  scheduler command: prewrite
+  takes: about 1043ms to 1050ms
+  flow_control_nanos: about 1.041s to 1.048s
+  async_write_nanos: about 2ms to 3ms
+```
+
+Interpretation: TiKV was deliberately delaying prewrite work through scheduler
+flow control. The slow part in the sampled log lines was `flow_control_nanos`,
+not the actual async write. Because the client had no retries and the TiCI
+worker does not backpressure TiKV inserts, the TiKV insert slowdown is a TiKV
+write/compaction capacity issue. EBS credits were not previously observed to be
+exhausted and RocksDB hard-stall metrics were zero, so adding only gp3 IOPS is
+unlikely to be the first fix. The next TiCI write optimization should prioritize
+more TiKV nodes or a larger TiKV class with more compaction capacity.
+
+TiKV QPS graph from the same Prometheus query used by the TiKV QPS panel:
+
+![TiKV QPS during TiCI 30GB partial run](assets/tikv_qps_30gb_w2_2026-05-07.png)
+
+TiCI worker evidence:
+
+```text
+TiCI worker instance: m5.2xlarge
+TiCI worker root volume: 100GB gp3, 3000 IOPS, 125 MiB/s
+df: /dev/root 97GB used, 0 free, 100% full
+data dir: /tidb-deploy/tici-worker-8510/data/fragments = 92GB
+first local disk error: 2026-05-07 15:05:07.601 UTC
+error: Os { code: 28, kind: StorageFull, message: "No space left on device" }
+systemd: Main process exited, code=dumped, status=6/ABRT at 15:05:21 UTC
+after restart: repeated code=exited, status=101
+restart counter: 29 before the service was stopped
+kernel OOM/killed process log entries: none observed
+```
+
+Interpretation: the worker restart was not OOM. The immediate root cause was
+local disk exhaustion under `/tidb-deploy/tici-worker-8510/data/fragments` while
+compaction downloaded S3 fragment parts into local scratch directories. The
+first 14:40 restart was a clean exit followed by `Restart=always`; the 15:05
+failure was an ABRT/core dump after local disk-full errors, followed by repeated
+Rust status 101 exits because the disk remained full.
+
+Next TiCI run requirements before increasing data size:
+
+```text
+1. Give TiCI worker a larger dedicated data volume, not just the 100GB root disk.
+2. Keep TiFlash stopped for write-only runs.
+3. Increase TiKV write capacity by adding TiKV nodes or using a larger TiKV
+   instance class; do not rely on gp3 IOPS alone.
+4. Record exact TiCI catch-up only after worker disk capacity is fixed.
+```

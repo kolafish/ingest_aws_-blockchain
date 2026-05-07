@@ -257,3 +257,72 @@ For the next comparable run:
 5. For 100GB or 1TB, do not extrapolate only from average rows/s. ES still
    showed long-tail bulk stalls under higher concurrency, even when retries
    disappeared on the 6-node cluster.
+
+## 30GB Canonical TiCI Partial Run
+
+This run used the locked 30GB S3 manifest from
+`manifests/eth_transactions_30gb_s3.lock.json`. It was stopped manually on
+2026-05-07 before completion after TiCI worker disk exhaustion was confirmed.
+Do not compare it as a clean completed run.
+
+| Field | Value |
+| --- | --- |
+| Run ID | `20260507T123537Z_30gb_w2_b500` |
+| Dataset target | 82,501,974 rows; 118,956,184,322 logical bytes |
+| Writer workers | 2 |
+| Batch rows | 500 |
+| Rows inserted before stop | 75,576,500 |
+| Dataset completion | 91.61% |
+| Logical bytes inserted | 108,961,146,180 bytes / 101.48 GiB |
+| Insert elapsed | 9,465.161s / 157.75 min |
+| Average insert throughput | 7,984.7 rows/s; 11.51 MB/s |
+| Batch latency | p50 80.180ms; p95 202.680ms; p99 1,204.624ms |
+| Client retries | 0 |
+| TiDB stats row count | 75,576,500 |
+| Modeled hourly cost | $1.887/h, using the m5-worker provisioned model above |
+| Rows/s per $/h | 4,231 |
+| Runtime cost | about $4.96 |
+| Runtime cost per 1M inserted rows | about $0.0656 |
+
+TiKV issue observed during this run:
+
+```text
+TiKV: r5.xlarge, 300GB gp3, 4000 IOPS, 288 MiB/s
+RocksDB default CF pending compaction bytes: previously observed up to about 176GiB
+TiKV log at 2026-05-07 15:12:30 UTC:
+  prewrite scheduler takes about 1043ms to 1050ms
+  flow_control_nanos about 1.041s to 1.048s
+  async_write_nanos only about 2ms to 3ms
+```
+
+The evidence points to TiKV scheduler flow control from compaction debt on the
+single TiKV node. This is not a client-side parquet/read bottleneck, and it is
+not TiCI worker backpressure. Earlier checks showed EBS credits were not
+exhausted and RocksDB hard stall metrics were zero, so the practical next
+optimization is more TiKV write/compaction capacity, especially more TiKV
+nodes, before treating gp3 IOPS alone as the main lever.
+
+TiKV QPS during the partial 30GB run:
+
+![TiKV QPS during TiCI 30GB partial run](assets/tikv_qps_30gb_w2_2026-05-07.png)
+
+TiCI worker issue observed during this run:
+
+```text
+TiCI worker: m5.2xlarge, 100GB root gp3, 3000 IOPS, 125 MiB/s
+/dev/root: 97GB used, 0 free, 100% full
+/tidb-deploy/tici-worker-8510/data/fragments: 92GB
+first "No space left on device" log: 2026-05-07 15:05:07.601 UTC
+systemd: status=6/ABRT at 2026-05-07 15:05:21 UTC
+subsequent restarts: status=101, restart counter reached 29
+kernel OOM evidence: none observed
+```
+
+The worker was not killed by OOM. The root cause was local TiCI worker disk
+exhaustion while compacting fragments: the worker downloaded S3 fragment parts
+into local `data/fragments/.../downloading/...` scratch directories until the
+100GB root volume was full. After the ABRT, systemd restarted the service, but
+the disk was still full, so it repeatedly exited with status 101. For the next
+100GB-scale TiCI run, either provision a larger dedicated TiCI worker data
+volume or reduce/limit local compaction scratch concurrency before increasing
+dataset size.

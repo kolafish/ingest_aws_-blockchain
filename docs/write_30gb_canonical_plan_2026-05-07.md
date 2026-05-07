@@ -96,3 +96,35 @@ The logical write volume is about 3.02x the prior ES 10GB logical bytes:
 
 This is therefore the planned "about 100GB actual write" step before moving to
 larger 1TB-scale tests.
+
+## TiCI Partial Run Result
+
+The first TiCI run on this locked dataset was stopped manually on 2026-05-07
+after TiCI worker local disk exhaustion was confirmed. It should be treated as a
+diagnostic partial run, not a completed benchmark.
+
+```text
+run_id: 20260507T123537Z_30gb_w2_b500
+writer workers: 2
+batch rows: 500
+inserted rows: 75,576,500 / 82,501,974
+completion: 91.61%
+logical bytes inserted: 108,961,146,180 / 118,956,184,322
+elapsed: 9,465.161s
+throughput: 7,984.7 rows/s
+TiDB stats Row_count: 75,576,500
+```
+
+Root causes recorded in more detail:
+
+```text
+docs/write_benchmark_comparison_2026-05-07.md
+docs/write_bottleneck_analysis_2026-05-07.md
+```
+
+Short version:
+
+```text
+TiKV: prewrite was delayed by scheduler flow control from compaction debt.
+TiCI worker: 100GB root disk filled during fragment compaction; not OOM.
+```
